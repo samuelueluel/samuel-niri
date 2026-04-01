@@ -35,7 +35,6 @@ modules:
         - yalter/niri            # niri compositor
         - che/zed                # Zed editor
         - alternateved/cliphist  # clipboard history daemon
-        - dustee071/unstable-apps  # nwg-look (GTK theme switcher for Wayland)
       files:
         - https://github.com/terrapkg/subatomic-repos/raw/main/terra.repo
         # dropbox.repo is baked in via the files module (avoids CI network block)
@@ -45,7 +44,6 @@ modules:
         - niri
         - zed
         - cliphist
-        - nwg-look
         - dropbox
 
   # ── Wayland compositor stack ──────────────────────────────────────────────
@@ -319,6 +317,12 @@ modules:
           - com.stremio.Stremio
           # System
           - io.missioncenter.MissionCenter
+
+  # ── Build nwg-look from source ────────────────────────────────────────────
+  # dustee071/unstable-apps COPR does not publish Fedora 43 builds
+  - type: script
+    scripts:
+      - install-nwg-look.sh
 
   # ── Install auto-cpufreq from source ──────────────────────────────────────
   # principis/auto-cpufreq COPR does not publish Fedora 43 builds
