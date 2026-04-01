@@ -34,7 +34,6 @@ modules:
       copr:
         - yalter/niri            # niri compositor
         - che/zed                # Zed editor
-        - principis/auto-cpufreq # CPU frequency/power manager
         - alternateved/cliphist  # clipboard history daemon
         - dustee071/unstable-apps  # nwg-look (GTK theme switcher for Wayland)
       files:
@@ -45,7 +44,6 @@ modules:
       packages:
         - niri
         - zed
-        - auto-cpufreq
         - cliphist
         - nwg-look
         - dropbox
@@ -321,6 +319,12 @@ modules:
           - com.stremio.Stremio
           # System
           - io.missioncenter.MissionCenter
+
+  # ── Install auto-cpufreq from source ──────────────────────────────────────
+  # principis/auto-cpufreq COPR does not publish Fedora 43 builds
+  - type: script
+    scripts:
+      - install-auto-cpufreq.sh
 
   # ── Install yazi binary ────────────────────────────────────────────────────
   # Not in Fedora repos; download pre-built musl binary from GitHub releases
