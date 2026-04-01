@@ -378,7 +378,7 @@ modules:
         - fstrim.timer
     user:
       enabled:
-        - dropbox.service
+        # dropbox.service: Dropbox RPM doesn't ship a systemd unit; use XDG autostart instead
         - pipewire.service
         - pipewire-pulse.service
         - wireplumber.service
