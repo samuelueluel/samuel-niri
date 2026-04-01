@@ -14,6 +14,10 @@
 | `inetutils` | Replaced with `iputils` + `hostname` |
 | `dropbox.service` | Removed from systemd — Dropbox RPM doesn't ship a systemd unit; autostart needs manual setup |
 
+## VM test findings (2026-04-01)
+- greetd fails without a `greeter` system user — fixed in `setup-greetd.sh`
+- Niri fails in VM with `DeviceMissing` (no KMS/DRM device) — expected, works on real hardware
+
 ## Packages installed via script instead of dnf (COPR lacks Fedora 43 builds)
 
 - `auto-cpufreq` — installed from source via pip (`install-auto-cpufreq.sh`)
