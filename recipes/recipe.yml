@@ -158,7 +158,7 @@ modules:
         - fwupd
         - keyd
         - playerctl
-        - modemmanager
+        - ModemManager
         - mesa-vulkan-drivers     # includes AMD Radeon Vulkan (ThinkPad P14s)
         # - mesa-va-drivers       # already in base-main (ublue upgrades it)
         # - libva-utils           # already in base-main
