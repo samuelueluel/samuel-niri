@@ -135,13 +135,13 @@ modules:
       install-weak-deps: false
       packages:
         - pipewire-alsa
-        - pipewire-jack
+        - pipewire-jack-audio-connection-kit  # JACK compat (Fedora name for pipewire-jack)
         - pipewire-pulse
         - wireplumber
         - rtkit
         - alsa-firmware
         - alsa-utils
-        - sof-firmware            # Sound Open Firmware (critical for ThinkPad audio)
+        - alsa-sof-firmware       # Sound Open Firmware (Fedora name for sof-firmware)
         - pipewire-gstreamer
         - lsp-plugins-lv2        # LV2 audio plugins for host JACK apps
 
