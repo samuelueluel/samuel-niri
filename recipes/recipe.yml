@@ -112,7 +112,7 @@ modules:
       install-weak-deps: false
       packages:
         - nemo
-        - resvg                  # SVG preview support for yazi
+        # resvg: not in Fedora repos — yazi SVG previews unavailable without it
         - udiskie
         - trash-cli
         - unrar
