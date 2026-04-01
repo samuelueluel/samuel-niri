@@ -235,7 +235,8 @@ modules:
         - whois
         - ethtool
         - bind-utils
-        - inetutils
+        - iputils                 # ping etc. (replaces inetutils from Arch)
+        - hostname                # hostname command
         - inotify-tools
         - plocate
         - fastfetch
