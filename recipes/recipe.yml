@@ -22,11 +22,16 @@ modules:
       packages:
         - power-profiles-daemon
 
-  # ── RPM Fusion nonfree ────────────────────────────────────────────────────
-  # base-main pre-configures RPM Fusion free; we add nonfree for codecs/libdvdcss
+  # ── RPM Fusion nonfree + tainted ─────────────────────────────────────────
+  # base-main pre-configures RPM Fusion free; we add nonfree for codecs.
+  # rpmfusion-nonfree-release-tainted enables the tainted subrepo (libdvdcss).
   - type: dnf
     repos:
       nonfree: rpmfusion
+    install:
+      install-weak-deps: false
+      packages:
+        - rpmfusion-nonfree-release-tainted
 
   # ── COPR + external repos, plus their packages ────────────────────────────
   - type: dnf
@@ -206,7 +211,7 @@ modules:
         - gstreamer1-plugins-good
         - gstreamer1-plugins-bad-free
         - gstreamer1-plugins-ugly
-        - libdvdcss               # from RPM Fusion nonfree
+        - libdvdcss               # from RPM Fusion nonfree-tainted
         - libopenraw
         - libgsf
         - poppler-glib
