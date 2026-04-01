@@ -102,7 +102,7 @@ modules:
         # - fzf                   # already in base-main
         - zoxide
         - nano
-        - nano-syntax-highlighting
+        # nano-syntax-highlighting: not in Fedora repos
         - less
 
   # ── File management ───────────────────────────────────────────────────────
