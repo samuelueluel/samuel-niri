@@ -1,0 +1,367 @@
+name: samuel-niri
+description: Minimal Niri Wayland Fedora Atomic image for work laptop
+base-image: ghcr.io/ublue-os/base-main
+image-version: latest
+
+modules:
+
+  # ── Remove conflicting base-image packages ────────────────────────────────
+  # power-profiles-daemon conflicts with auto-cpufreq (both control CPU scaling)
+  - type: dnf
+    remove:
+      packages:
+        - power-profiles-daemon
+
+  # ── RPM Fusion nonfree ────────────────────────────────────────────────────
+  # base-main pre-configures RPM Fusion free; we add nonfree for codecs/libdvdcss
+  - type: dnf
+    repos:
+      nonfree: rpmfusion
+
+  # ── COPR + external repos, plus their packages ────────────────────────────
+  - type: dnf
+    repos:
+      copr:
+        - yalter/niri            # niri compositor
+        - che/zed                # Zed editor
+        - principis/auto-cpufreq # CPU frequency/power manager
+        - alternateved/cliphist  # clipboard history daemon
+        - dustee071/unstable-apps  # nwg-look (GTK theme switcher for Wayland)
+      files:
+        - https://linux.dropbox.com/fedora/dropbox.repo
+        - https://github.com/terrapkg/subatomic-repos/raw/main/terra.repo
+    install:
+      install-weak-deps: false
+      packages:
+        - niri
+        - zed
+        - auto-cpufreq
+        - cliphist
+        - nwg-look
+        - dropbox
+
+  # ── Wayland compositor stack ──────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - waybar
+        - xdg-desktop-portal-gtk
+        - xdg-desktop-portal-gnome  # screencasting — Niri uses Smithay, not wlroots
+        - xwayland-satellite
+        - swaylock
+        - swayidle
+        - swaybg
+        - fuzzel
+        - SwayNotificationCenter
+        - wlsunset
+        - kanshi
+        - grim
+        - slurp
+        # - wl-clipboard          # already in base-main
+        - polkit-kde
+        - xdg-user-dirs
+        - xdg-utils
+        - gtk4-layer-shell
+        - network-manager-applet
+        - hyprpicker
+        - libappindicator-gtk3
+        - copyq
+        - nirius                 # Niri IPC scripting tool, from Terra
+        - jq                     # JSON parsing for Waybar/Niri IPC scripts
+        - socat                  # IPC socket listener for Niri event-driven Waybar updates
+        - pamixer                # CLI volume control for Waybar scroll/click actions
+        - dex                    # XDG Autostart launcher (dropbox, nm-applet, etc.)
+
+  # ── Display manager ───────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - greetd
+        - tuigreet
+
+  # ── Terminals + shell ─────────────────────────────────────────────────────
+  # Note: powerlevel10k and fzf-tab managed via dotfiles
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - alacritty
+        - kitty
+        - zsh
+        - zsh-autosuggestions
+        - zsh-syntax-highlighting
+        - bash-completion
+        # - fzf                   # already in base-main
+        - zoxide
+        - nano
+        - nano-syntax-highlighting
+        - less
+
+  # ── File management ───────────────────────────────────────────────────────
+  # yazi installed via script (not in Fedora repos)
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - nemo
+        - resvg                  # SVG preview support for yazi
+        - udiskie
+        - trash-cli
+        - unrar
+        - unzip
+        - gvfs-mtp
+        - gvfs-gphoto2
+        - gvfs-smb
+        - gvfs-nfs
+        - gvfs-fuse
+        - gvfs-archive
+        - ntfs-3g
+        - exfatprogs
+        - dosfstools
+        - nfs-utils
+        - xfsprogs                # XFS filesystem tools
+
+  # ── Audio ─────────────────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - pipewire-alsa
+        - pipewire-jack
+        - pipewire-pulse
+        - wireplumber
+        - rtkit
+        - alsa-firmware
+        - alsa-utils
+        - sof-firmware            # Sound Open Firmware (critical for ThinkPad audio)
+        - pipewire-gstreamer
+        - lsp-plugins-lv2        # LV2 audio plugins for host JACK apps
+
+  # ── Hardware + power ──────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - brightnessctl
+        - bluez
+        - blueman
+        - bluez-tools
+        - upower
+        - fwupd
+        - keyd
+        - playerctl
+        - modemmanager
+        - mesa-vulkan-drivers     # includes AMD Radeon Vulkan (ThinkPad P14s)
+        # - mesa-va-drivers       # already in base-main (ublue upgrades it)
+        # - libva-utils           # already in base-main
+        - mesa-demos              # glxinfo, eglinfo etc.
+        - thermald                # thermal management alongside auto-cpufreq
+
+  # ── Networking infrastructure ──────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - NetworkManager-openvpn
+        - NetworkManager-openconnect
+        - NetworkManager-openvpn-gnome
+        - NetworkManager-openconnect-gnome
+        - avahi
+        - nss-mdns
+        - dnsmasq                 # used by libvirt for VM networking
+        - openssh
+        - wget
+        - wireless-regdb
+        - firewall-config
+        - firewall-applet
+
+  # ── Printing ──────────────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - cups
+        - cups-browsed
+
+  # ── Media ─────────────────────────────────────────────────────────────────
+  # mpv stays in base (needed by yazi for video previews)
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - mpv
+        - swayimg                 # Wayland image viewer
+        - yt-dlp
+        # - ffmpeg                # already in base-main
+        - gstreamer1-plugin-libav
+        - gstreamer1-vaapi
+        - gstreamer1-plugins-good
+        - gstreamer1-plugins-bad-free
+        - gstreamer1-plugins-ugly
+        - libdvdcss               # from RPM Fusion nonfree
+        - libopenraw
+        - libgsf
+        - poppler-glib
+
+  # ── System utilities ───────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - git
+        - rsync
+        - stow
+        # - smartmontools         # already in base-main
+        - usbutils
+        - inxi
+        - dmidecode
+        - hdparm
+        - sg3_utils
+        - lsscsi
+        - sysfsutils
+        - whois
+        - ethtool
+        - bind-utils
+        - inetutils
+        - inotify-tools
+        - plocate
+        - fastfetch
+        - duf
+        - glances
+        - tldr
+        - man-db
+        - hwinfo
+        - gnome-keyring
+        - python3
+        - python3-evdev           # needed for keyd scripts
+        - os-prober               # GRUB: detect Windows for dual-boot
+
+  # ── Themes + appearance ────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - papirus-icon-theme
+        - adw-gtk3-theme
+        - qt6ct
+        - qt5ct
+
+  # ── Fonts ─────────────────────────────────────────────────────────────────
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - freetype-freeworld      # subpixel hinting + LCD filtering (better than stock Fedora FreeType)
+        - ibm-plex-sans-fonts     # full family: Light, Regular, SemiBold, Bold, etc.
+        - ibm-plex-mono-fonts
+        - google-noto-emoji-fonts
+        - google-noto-sans-fonts
+        - google-noto-serif-fonts
+        - google-noto-sans-cjk-fonts
+        - fontawesome-fonts-all
+        - liberation-fonts
+
+  - type: fonts
+    fonts:
+      nerd-fonts:
+        - JetBrainsMono           # full family direct from Nerd Fonts releases
+
+  # ── Virtualization ────────────────────────────────────────────────────────
+  - type: dnf
+    group-install:
+      packages:
+        - virtualization
+    install:
+      install-weak-deps: false
+      packages:
+        - virt-manager
+
+  # ── Flatpaks ──────────────────────────────────────────────────────────────
+  - type: default-flatpaks
+    configurations:
+      - scope: system
+        notify: true
+        repo:
+          title: Flathub
+          url: https://dl.flathub.org/repo/flathub.flatpakrepo
+        install:
+          # Browsers
+          - com.vivaldi.Vivaldi
+          - io.gitlab.librewolf-community
+          # Productivity
+          - md.obsidian.Obsidian
+          - com.bitwarden.desktop
+          - org.kde.okular
+          - com.github.jeromerobert.pdfarranger
+          - org.gnumeric.Gnumeric
+          - org.gnome.meld
+          - com.abisource.AbiWord          # for opening Word files
+          - org.texstudio.TeXstudio        # bundles TeXLive
+          # Audio/media
+          - com.github.wwmm.easyeffects
+          - org.pulseaudio.pavucontrol
+          - io.github.quodlibet.QuodLibet
+          # Work/GIS
+          - org.qgis.qgis
+          # Entertainment
+          - org.nicotine_plus.Nicotine     # NOTE: archived on Flathub, may stop receiving updates
+          - com.stremio.Stremio
+          # System
+          - io.missioncenter.MissionCenter
+
+  # ── Install yazi binary ────────────────────────────────────────────────────
+  # Not in Fedora repos; download pre-built musl binary from GitHub releases
+  - type: script
+    scripts:
+      - install-yazi.sh
+
+  # ── Build xdg-desktop-portal-termfilechooser ──────────────────────────────
+  # Yazi file picker portal; not packaged for Fedora, built from source (Rust)
+  - type: script
+    scripts:
+      - build-termfilechooser.sh
+
+  # ── Install Oreo cursors ───────────────────────────────────────────────────
+  - type: script
+    scripts:
+      - install-oreo-cursors.sh
+
+  # ── Install Microsoft core fonts (Arial, Times New Roman, etc.) ──────────
+  # Not packaged for Fedora; downloaded from SourceForge via cabextract
+  - type: script
+    scripts:
+      - install-msfonts.sh
+
+  # ── Configure greetd ──────────────────────────────────────────────────────
+  - type: script
+    scripts:
+      - setup-greetd.sh
+
+  # ── Bake system-level config files ────────────────────────────────────────
+  # - Portal routing: FileChooser→termfilechooser, ScreenCast/Screenshot→gnome
+  # - Default cursor theme pointer
+  - type: files
+    files:
+      - source: system/usr
+        destination: /usr
+
+  # ── Systemd services ──────────────────────────────────────────────────────
+  - type: systemd
+    system:
+      enabled:
+        - greetd.service
+        - libvirtd.service
+        - keyd.service
+        - auto-cpufreq.service
+        - thermald.service
+        - avahi-daemon.service
+        - cups.service
+        - fstrim.timer
+    user:
+      enabled:
+        - dropbox.service
+        - pipewire.service
+        - pipewire-pulse.service
+        - wireplumber.service
