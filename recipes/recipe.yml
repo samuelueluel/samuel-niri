@@ -70,14 +70,14 @@ modules:
         - xdg-utils
         - gtk4-layer-shell
         - network-manager-applet
-        - hyprpicker
+        # hyprpicker: not in Fedora repos — add via script if needed
         - libappindicator-gtk3
         - copyq
         - nirius                 # Niri IPC scripting tool, from Terra
         - jq                     # JSON parsing for Waybar/Niri IPC scripts
         - socat                  # IPC socket listener for Niri event-driven Waybar updates
         - pamixer                # CLI volume control for Waybar scroll/click actions
-        - dex                    # XDG Autostart launcher (dropbox, nm-applet, etc.)
+        # dex: not in Fedora repos — XDG Autostart launcher, add via script if needed
 
   # ── Display manager ───────────────────────────────────────────────────────
   - type: dnf
