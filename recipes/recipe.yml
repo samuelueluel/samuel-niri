@@ -5,6 +5,16 @@ image-version: latest
 
 modules:
 
+  # ── Bake system-level config files ────────────────────────────────────────
+  # Placed first so repo files (e.g. dropbox.repo) are in place before dnf runs.
+  # - /etc/yum.repos.d/dropbox.repo: avoids fetching from linux.dropbox.com in CI
+  # - Portal routing: FileChooser→termfilechooser, ScreenCast/Screenshot→gnome
+  # - Default cursor theme pointer
+  - type: files
+    files:
+      - source: system
+        destination: /
+
   # ── Remove conflicting base-image packages ────────────────────────────────
   # power-profiles-daemon conflicts with auto-cpufreq (both control CPU scaling)
   - type: dnf
@@ -28,8 +38,8 @@ modules:
         - alternateved/cliphist  # clipboard history daemon
         - dustee071/unstable-apps  # nwg-look (GTK theme switcher for Wayland)
       files:
-        - https://linux.dropbox.com/fedora/dropbox.repo
         - https://github.com/terrapkg/subatomic-repos/raw/main/terra.repo
+        # dropbox.repo is baked in via the files module (avoids CI network block)
     install:
       install-weak-deps: false
       packages:
@@ -339,14 +349,6 @@ modules:
   - type: script
     scripts:
       - setup-greetd.sh
-
-  # ── Bake system-level config files ────────────────────────────────────────
-  # - Portal routing: FileChooser→termfilechooser, ScreenCast/Screenshot→gnome
-  # - Default cursor theme pointer
-  - type: files
-    files:
-      - source: system/usr
-        destination: /usr
 
   # ── Systemd services ──────────────────────────────────────────────────────
   - type: systemd
