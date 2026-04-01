@@ -31,7 +31,7 @@ modules:
     install:
       install-weak-deps: false
       packages:
-        - rpmfusion-nonfree-release-tainted
+        - rpmfusion-free-release-tainted   # enables free-tainted subrepo (libdvdcss is here)
 
   # ── COPR + external repos, plus their packages ────────────────────────────
   - type: dnf
