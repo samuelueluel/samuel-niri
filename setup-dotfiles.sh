@@ -16,11 +16,8 @@ if [[ ! -d "$DOTFILES/.git" ]]; then
     exit 1
 fi
 
-# ── 2. Configure chezmoi to use ~/dotfiles as source ─────────────────────────
-mkdir -p ~/.config/chezmoi
-cat > ~/.config/chezmoi/chezmoi.toml <<'EOF'
-sourceDir = "/home/samuel/dotfiles"
-EOF
+# ── 2. Configure chezmoi (reads .chezmoi.toml.tmpl from source dir) ──────────
+chezmoi init --source="$HOME/dotfiles"
 
 # ── 3. Pre-create directories chezmoi won't create on its own ────────────────
 mkdir -p \
@@ -57,7 +54,6 @@ echo ""
 echo "Manual steps still needed:"
 echo "  - Vivaldi profiles (Preferences / contextmenu.json) — copy from:"
 echo "    ~/system_config_git/vivaldi/{casual,work,llm}/"
-echo "  - Vivaldi launchers: fix Exec= lines for Flatpak (see SETUP.md for sed command)"
 echo "  - Wallpapers — cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers"
 echo "  - Dropbox — sign in"
 echo "  - EasyEffects — presets are applied; open the app to confirm they loaded"

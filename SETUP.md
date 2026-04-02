@@ -88,6 +88,9 @@ git clone git@github.com:samuelueluel/samuel-niri.git ~/work-image
 git clone git@github.com:samuelueluel/system_config_git.git ~/system_config_git
 ```
 
+`system_config_git` is needed for manual steps in step 8 (Vivaldi preferences and wallpapers).
+It is not used by chezmoi.
+
 ---
 
 ## 6. Run dotfiles setup
@@ -129,7 +132,8 @@ gemini   # browser OAuth on first run
 dropbox start -i
 ```
 
-**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences:
+**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences.
+*(Requires `~/system_config_git` — see step 5.)*
 
 ```bash
 # Find the generated profile dir names:
@@ -141,19 +145,10 @@ cp ~/system_config_git/vivaldi/casual/contextmenu.json ~/.config/vivaldi/<casual
 # repeat for work and llm
 ```
 
-**Note:** The Vivaldi launcher `.desktop` files (deployed by chezmoi) use `/usr/bin/vivaldi` (native
-package path). Since Vivaldi is a Flatpak on this image, update the `Exec=` lines:
-
-```bash
-# Replace the native exec path with the Flatpak invocation in each launcher:
-sed -i 's|Exec=env GTK_THEME=Adwaita:dark /usr/bin/vivaldi\(-stable\)\?|Exec=env GTK_THEME=Adwaita:dark flatpak run com.vivaldi.Vivaldi|' \
-    ~/.local/share/applications/Vivaldi*.desktop
-```
-
 **Extensions** install normally through the Chrome Web Store — they live in `~/.config/vivaldi/`
 (mutable home dir) and survive reboots and image updates.
 
-**Wallpapers:**
+**Wallpapers** *(Requires `~/system_config_git` — see step 5.)*
 ```bash
 cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers
 ```
