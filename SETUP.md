@@ -128,23 +128,36 @@ gemini   # browser OAuth on first run
 dropbox start -i
 ```
 
-**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences:
+**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences.
+Preferences are backed up in Dropbox at `Linux_Config_Backup/EndeavourOS/vivaldi/`:
+
 ```bash
 # Find the generated profile dir names:
 ls ~/.config/vivaldi/
 
 # Copy preferences for each profile (casual, work, llm):
-cp ~/work-image/files/vivaldi/casual/Preferences      ~/.config/vivaldi/<casual-profile-dir>/
-cp ~/work-image/files/vivaldi/casual/contextmenu.json ~/.config/vivaldi/<casual-profile-dir>/
+cp ~/Dropbox/Linux_Config_Backup/EndeavourOS/vivaldi/casual/Preferences      ~/.config/vivaldi/<casual-profile-dir>/
+cp ~/Dropbox/Linux_Config_Backup/EndeavourOS/vivaldi/casual/contextmenu.json ~/.config/vivaldi/<casual-profile-dir>/
 # repeat for work and llm
+```
+
+**Note:** The Vivaldi launcher `.desktop` files (deployed by chezmoi) use `/usr/bin/vivaldi` (native
+package path). Since Vivaldi is a Flatpak on this image, update the `Exec=` lines:
+
+```bash
+# Replace the native exec path with the Flatpak invocation in each launcher:
+sed -i 's|Exec=env GTK_THEME=Adwaita:dark /usr/bin/vivaldi\(-stable\)\?|Exec=env GTK_THEME=Adwaita:dark flatpak run com.vivaldi.Vivaldi|' \
+    ~/.local/share/applications/Vivaldi*.desktop
 ```
 
 **Extensions** install normally through the Chrome Web Store — they live in `~/.config/vivaldi/`
 (mutable home dir) and survive reboots and image updates.
 
-**Wallpapers:**
+**Wallpapers** are in Dropbox:
 ```bash
-cp -r ~/work-image/files/Wallpapers ~/Pictures/Wallpapers
+mkdir -p ~/Pictures/Wallpapers
+cp -r ~/Dropbox/Linux_Config_Backup/EndeavourOS/Wallpapers/. ~/Pictures/Wallpapers/
 ```
+(Or copy them from the old machine before wiping.)
 
 **EasyEffects** — presets are applied by chezmoi; open the app to confirm they loaded.
