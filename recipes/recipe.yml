@@ -82,6 +82,7 @@ modules:
         - jq                     # JSON parsing for Waybar/Niri IPC scripts
         - socat                  # IPC socket listener for Niri event-driven Waybar updates
         - pamixer                # CLI volume control for Waybar scroll/click actions
+        - swayosd                # OSD popups for volume/brightness/capslock changes
         # dex: not in Fedora repos — XDG Autostart launcher, add via script if needed
 
   # ── Display manager ───────────────────────────────────────────────────────
@@ -248,6 +249,7 @@ modules:
         - gnome-keyring
         - python3
         - python3-evdev           # needed for keyd scripts
+        - nodejs                  # required for Claude Code (npm install -g @anthropic-ai/claude-code)
         - os-prober               # GRUB: detect Windows for dual-boot
         - cosign                  # container image signing/verification
 
@@ -323,6 +325,13 @@ modules:
           - com.stremio.Stremio
           # System
           - io.missioncenter.MissionCenter
+
+  # ── Build patched niri_window_buttons waybar module ──────────────────────
+  # Patch centers icon in highlight box when show_window_titles=false.
+  # Not packaged for Fedora; built from source (Rust).
+  - type: script
+    scripts:
+      - build-niri-window-buttons.sh
 
   # ── Build nwg-look from source ────────────────────────────────────────────
   # dustee071/unstable-apps COPR does not publish Fedora 43 builds
