@@ -95,8 +95,8 @@ git clone git@github.com:samuelueluel/samuel-niri.git ~/work-image
 bash ~/work-image/setup-dotfiles.sh
 ```
 
-This runs `chezmoi apply`, which will prompt for your Bitwarden master password
-to inject the SSH private key into `~/.ssh/id_ed25519` from the secure note.
+This runs `chezmoi apply`, which deploys all config files (niri, waybar, zsh, etc.),
+vivaldi launcher .desktop files, and nemo settings.
 Log out and back in — this activates zsh.
 
 ---

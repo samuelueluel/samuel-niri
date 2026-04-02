@@ -20,9 +20,6 @@ fi
 mkdir -p ~/.config/chezmoi
 cat > ~/.config/chezmoi/chezmoi.toml <<'EOF'
 sourceDir = "/home/samuel/dotfiles"
-
-[bitwarden]
-    command = "bw"
 EOF
 
 # ── 3. Pre-create directories chezmoi won't create on its own ────────────────
@@ -41,13 +38,8 @@ chmod 700 ~/.ssh
 #   - apply all config files (niri, waybar, kitty, alacritty, zsh, etc.)
 #   - run run_once_load-nemo-dconf.sh to set Nemo preferences
 #   - apply vivaldi launcher .desktop files to ~/.local/share/applications/
-#   - prompt for Bitwarden master password to inject SSH key templates
 echo "Applying dotfiles via chezmoi..."
 chezmoi apply
-
-# Fix SSH key permissions after chezmoi apply
-chmod 600 ~/.ssh/id_ed25519 2>/dev/null || true
-chmod 644 ~/.ssh/id_ed25519.pub 2>/dev/null || true
 
 # ── 5. Refresh desktop file MIME database ────────────────────────────────────
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
