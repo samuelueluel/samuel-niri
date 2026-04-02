@@ -85,6 +85,7 @@ ssh -T git@github.com
 ```bash
 git clone git@github.com:samuelueluel/dotfiles.git ~/dotfiles
 git clone git@github.com:samuelueluel/samuel-niri.git ~/work-image
+git clone git@github.com:samuelueluel/system_config_git.git ~/system_config_git
 ```
 
 ---
@@ -128,16 +129,15 @@ gemini   # browser OAuth on first run
 dropbox start -i
 ```
 
-**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences.
-Preferences are backed up in Dropbox at `Linux_Config_Backup/EndeavourOS/vivaldi/`:
+**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences:
 
 ```bash
 # Find the generated profile dir names:
 ls ~/.config/vivaldi/
 
 # Copy preferences for each profile (casual, work, llm):
-cp ~/Dropbox/Linux_Config_Backup/EndeavourOS/vivaldi/casual/Preferences      ~/.config/vivaldi/<casual-profile-dir>/
-cp ~/Dropbox/Linux_Config_Backup/EndeavourOS/vivaldi/casual/contextmenu.json ~/.config/vivaldi/<casual-profile-dir>/
+cp ~/system_config_git/vivaldi/casual/Preferences      ~/.config/vivaldi/<casual-profile-dir>/
+cp ~/system_config_git/vivaldi/casual/contextmenu.json ~/.config/vivaldi/<casual-profile-dir>/
 # repeat for work and llm
 ```
 
@@ -153,11 +153,9 @@ sed -i 's|Exec=env GTK_THEME=Adwaita:dark /usr/bin/vivaldi\(-stable\)\?|Exec=env
 **Extensions** install normally through the Chrome Web Store — they live in `~/.config/vivaldi/`
 (mutable home dir) and survive reboots and image updates.
 
-**Wallpapers** are in Dropbox:
+**Wallpapers:**
 ```bash
-mkdir -p ~/Pictures/Wallpapers
-cp -r ~/Dropbox/Linux_Config_Backup/EndeavourOS/Wallpapers/. ~/Pictures/Wallpapers/
+cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers
 ```
-(Or copy them from the old machine before wiping.)
 
 **EasyEffects** — presets are applied by chezmoi; open the app to confirm they loaded.
