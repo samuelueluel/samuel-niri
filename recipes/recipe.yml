@@ -386,6 +386,9 @@ modules:
         - avahi-daemon.service
         - cups.service
         - fstrim.timer
+      disabled:
+        - gdm.service
+        - sddm.service
     user:
       enabled:
         # dropbox.service: Dropbox RPM doesn't ship a systemd unit; use XDG autostart instead

@@ -4,15 +4,27 @@ set -euo pipefail
 
 # Use the 'greetd' system user provided by the Fedora package.
 # We ensure it is in the right groups via sysusers.d and has a cache dir via tmpfiles.d.
+# In Fedora Atomic, sysusers.d might not apply to pre-existing users, so we add them here.
+echo "Adding greetd user to video and input groups..."
+getent group video >/dev/null && usermod -aG video greetd || echo "Group 'video' not found, skipping."
+getent group input >/dev/null && usermod -aG input greetd || echo "Group 'input' not found, skipping."
 
 mkdir -p /etc/greetd
 
-cat > /etc/greetd/config.toml << 'EOF'
+# Determine the session directory (Fedora uses /usr/share/wayland-sessions)
+SESSION_DIR="/usr/share/wayland-sessions"
+TUIGREET_CMD="tuigreet --time --remember --remember-session"
+
+if [ -d "$SESSION_DIR" ]; then
+    TUIGREET_CMD="$TUIGREET_CMD --sessions $SESSION_DIR"
+fi
+
+cat > /etc/greetd/config.toml << EOF
 [terminal]
 vt = 2
 
 [default_session]
-command = "tuigreet --time --remember --remember-session --sessions /usr/share/wayland-sessions"
+command = "$TUIGREET_CMD"
 user = "greetd"
 EOF
 
