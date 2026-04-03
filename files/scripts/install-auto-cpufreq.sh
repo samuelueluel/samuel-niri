@@ -25,9 +25,13 @@ install -Dm644 scripts/auto-cpufreq.service \
     /usr/lib/systemd/system/auto-cpufreq.service
 
 # Patch the service file to use /usr paths instead of /opt venv
-sed -i 's|/opt/auto-cpufreq/venv/bin/python /opt/auto-cpufreq/venv/bin/auto-cpufreq|/usr/bin/auto-cpufreq|' /usr/lib/systemd/system/auto-cpufreq.service
-sed -i 's|WorkingDirectory=/opt/auto-cpufreq/venv|WorkingDirectory=/tmp|' /usr/lib/systemd/system/auto-cpufreq.service
-sed -i 's|Environment=PYTHONPATH=/opt/auto-cpufreq|Environment=PYTHONPATH=/usr/lib/python3.14/site-packages|' /usr/lib/systemd/system/auto-cpufreq.service
-# Note: python version might change, but this is a better guess than /opt
+# Using absolute path for auto-cpufreq and ensuring PYTHONPATH points to where pip installed it
+PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+sed -i "s|ExecStart=.*|ExecStart=/usr/bin/auto-cpufreq --daemon|" /usr/lib/systemd/system/auto-cpufreq.service
+sed -i "s|WorkingDirectory=.*|WorkingDirectory=/tmp|" /usr/lib/systemd/system/auto-cpufreq.service
+sed -i "s|Environment=PYTHONPATH=.*|Environment=PYTHONPATH=/usr/lib/python${PYTHON_VERSION}/site-packages|" /usr/lib/systemd/system/auto-cpufreq.service
 
-echo "auto-cpufreq installed."
+# Pre-create the directory auto-cpufreq tries to write to at runtime
+# Since /usr is immutable, we want to ensure it has what it needs.
+mkdir -p /usr/share/auto-cpufreq/scripts
+install -m 755 scripts/cpufreqctl.sh /usr/share/auto-cpufreq/scripts/cpufreqctl.sh
