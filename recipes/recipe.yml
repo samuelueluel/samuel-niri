@@ -319,7 +319,7 @@ modules:
           - org.pulseaudio.pavucontrol
           - io.github.quodlibet.QuodLibet
           # Work/GIS
-          - org.qgis.qgis
+          - org.qgis.qgis//stable
           # Entertainment
           - org.nicotine_plus.Nicotine     # NOTE: archived on Flathub, may stop receiving updates
           - com.stremio.Stremio
