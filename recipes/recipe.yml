@@ -296,7 +296,8 @@ modules:
   # ── Web Browsers ──────────────────────────────────────────────────────────
   - type: dnf
     repos:
-      vivaldi: https://repo.vivaldi.com/archive/vivaldi-fedora.repo
+      files:
+        - https://repo.vivaldi.com/archive/vivaldi-fedora.repo
     install:
       install-weak-deps: false
       packages:
