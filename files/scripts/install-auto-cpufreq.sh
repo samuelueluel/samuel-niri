@@ -14,7 +14,8 @@ git clone --depth=1 https://github.com/AdnanHodzic/auto-cpufreq.git "$WORK_DIR/a
 cd "$WORK_DIR/auto-cpufreq"
 
 # Install to /usr so it's part of the immutable image layer
-pip3 install --prefix=/usr .
+# Using --break-system-packages because we are building a container image where this is intentional.
+pip3 install --prefix=/usr --break-system-packages .
 
 # Install missing scripts that the python package expects at specific paths
 install -Dm755 scripts/cpufreqctl.sh /usr/share/auto-cpufreq/scripts/cpufreqctl.sh
