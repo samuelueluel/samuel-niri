@@ -5,9 +5,14 @@ set -euo pipefail
 # Use the 'greetd' system user provided by the Fedora package.
 # We ensure it is in the right groups via sysusers.d and has a cache dir via tmpfiles.d.
 # In Fedora Atomic, sysusers.d might not apply to pre-existing users, so we add them here.
-echo "Adding greetd user to video and input groups..."
-getent group video >/dev/null && usermod -aG video greetd || echo "Group 'video' not found, skipping."
-getent group input >/dev/null && usermod -aG input greetd || echo "Group 'input' not found, skipping."
+echo "Adding greetd user to video, render, and input groups..."
+for grp in video render input; do
+    if getent group "$grp" >/dev/null; then
+        usermod -aG "$grp" greetd
+    else
+        echo "Group '$grp' not found, skipping."
+    fi
+done
 
 mkdir -p /etc/greetd
 
