@@ -2,18 +2,23 @@
 # Configures greetd to use tuigreet, launching a niri Wayland session.
 set -euo pipefail
 
-# Create the greeter system user greetd requires
-useradd -r -d /var/lib/greeter -s /sbin/nologin greeter || true
+# Use the 'greetd' system user provided by the Fedora package.
+# We ensure it is in the right groups via sysusers.d and has a cache dir via tmpfiles.d.
 
 mkdir -p /etc/greetd
 
 cat > /etc/greetd/config.toml << 'EOF'
 [terminal]
-vt = 1
+vt = 2
 
 [default_session]
 command = "tuigreet --time --remember --remember-session --sessions /usr/share/wayland-sessions"
-user = "greeter"
+user = "greetd"
 EOF
 
-echo "greetd configured with tuigreet."
+# Ensure the cache directory for tuigreet's --remember flags exists with correct ownership
+mkdir -p /var/cache/tuigreet
+chown greetd:greetd /var/cache/tuigreet
+chmod 0755 /var/cache/tuigreet
+
+echo "greetd configured with tuigreet on VT 2."

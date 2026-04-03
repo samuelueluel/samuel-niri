@@ -132,20 +132,22 @@ gemini   # browser OAuth on first run
 dropbox start -i
 ```
 
-**Vivaldi** — launch each profile once to generate its profile directory, then copy saved preferences.
+**Vivaldi** — launch each profile once (Casual, Work, LLMs) to generate its data directory, then copy saved preferences.
 *(Requires `~/system_config_git` — see step 5.)*
 
 ```bash
-# Find the generated profile dir names:
-ls ~/.config/vivaldi/
-
 # Copy preferences for each profile (casual, work, llm):
-cp ~/system_config_git/vivaldi/casual/Preferences      ~/.config/vivaldi/<casual-profile-dir>/
-cp ~/system_config_git/vivaldi/casual/contextmenu.json ~/.config/vivaldi/<casual-profile-dir>/
-# repeat for work and llm
+cp ~/system_config_git/vivaldi/casual/Preferences      ~/.config/vivaldi-casual/Default/
+cp ~/system_config_git/vivaldi/casual/contextmenu.json ~/.config/vivaldi-casual/Default/
+
+cp ~/system_config_git/vivaldi/work/Preferences        ~/.config/vivaldi-work/Default/
+cp ~/system_config_git/vivaldi/work/contextmenu.json   ~/.config/vivaldi-work/Default/
+
+cp ~/system_config_git/vivaldi/llm/Preferences         ~/.config/vivaldi-llm/Default/
+cp ~/system_config_git/vivaldi/llm/contextmenu.json    ~/.config/vivaldi-llm/Default/
 ```
 
-**Extensions** install normally through the Chrome Web Store — they live in `~/.config/vivaldi/`
+**Extensions** install normally through the Chrome Web Store — they live in their respective `~/.config/vivaldi-*/Default/`
 (mutable home dir) and survive reboots and image updates.
 
 **Wallpapers** *(Requires `~/system_config_git` — see step 5.)*
@@ -154,3 +156,22 @@ cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers
 ```
 
 **EasyEffects** — presets are applied by chezmoi; open the app to confirm they loaded.
+
+**Okular (and other Flatpaks)** — Because many apps are now Flatpaks, their config files do not go in `~/.config/`. They must go in `~/.var/app/<app-id>/config/`.
+*(Requires `~/system_config_git` — see step 5.)*
+
+```bash
+# Launch Okular once to generate its sandbox directory
+flatpak run org.kde.okular & sleep 2 && kill $!
+
+# Copy your custom Okular config into the Flatpak sandbox
+mkdir -p ~/.var/app/org.kde.okular/config
+cp ~/system_config_git/okular/.config/okularrc ~/.var/app/org.kde.okular/config/okularrc
+```
+
+**Other** - check the `system_config_git` folder for any other settings not auto-applied. Remember: if the app is a Flatpak, its configs belong in `~/.var/app/`, not `~/.config/`.
+
+FYI: Trigger rebuild: gh workflow run bluebuild --repo samuelueluel/samuel-niri
+
+  gh workflow run triggers a workflow_dispatch event on the named workflow. The workflow file has
+  workflow_dispatch: in its on: triggers, which is what allows it to be fired manually like this.

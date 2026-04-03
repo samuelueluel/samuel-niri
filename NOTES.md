@@ -24,3 +24,6 @@
 - `nwg-look` — built from source via Go/CGo (`install-nwg-look.sh`)
 - `xdg-desktop-portal-termfilechooser` — built from source via Meson (`build-termfilechooser.sh`)
 - `yazi` — pre-built musl binary from GitHub releases (`install-yazi.sh`)
+
+## Other
+- need to decide how to install rtk and headroom for LLM CLIs
