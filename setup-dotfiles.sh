@@ -51,15 +51,11 @@ chezmoi apply --force
 # ── 5. Refresh desktop file MIME database ────────────────────────────────────
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
 
-# ── 5.5. Configure Flatpak Permissions ───────────────────────────────────────
-echo "Configuring Flatpak permissions for Vivaldi..."
-flatpak override --user --filesystem=~/.config/vivaldi-casual --filesystem=~/.config/vivaldi-work --filesystem=~/.config/vivaldi-llm com.vivaldi.Vivaldi || true
-
 # ── 6. Set zsh as default shell ──────────────────────────────────────────────
 ZSH_PATH="$(command -v zsh)"
 if [[ "$SHELL" != "$ZSH_PATH" ]]; then
     echo "Setting zsh as default shell (requires password)..."
-    chsh -s "$ZSH_PATH"
+    sudo usermod -s "$ZSH_PATH" "$(whoami)"
 fi
 
 echo ""

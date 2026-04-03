@@ -293,6 +293,15 @@ modules:
       packages:
         - virt-manager
 
+  # ── Web Browsers ──────────────────────────────────────────────────────────
+  - type: dnf
+    repos:
+      vivaldi: https://repo.vivaldi.com/archive/vivaldi-fedora.repo
+    install:
+      install-weak-deps: false
+      packages:
+        - vivaldi-stable
+
   # ── Flatpaks ──────────────────────────────────────────────────────────────
   - type: default-flatpaks
     configurations:
@@ -303,7 +312,6 @@ modules:
           url: https://dl.flathub.org/repo/flathub.flatpakrepo
         install:
           # Browsers
-          - com.vivaldi.Vivaldi
           - io.gitlab.librewolf-community
           # Productivity
           - md.obsidian.Obsidian
