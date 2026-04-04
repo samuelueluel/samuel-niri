@@ -1,0 +1,10 @@
+#%PAM-1.0
+# greetd PAM service — includes system-auth stack plus KWallet auto-unlock.
+# pam_kwallet6.so uses login credentials to pre-unlock KWallet so Vivaldi
+# (and other apps using org.freedesktop.secrets) don't prompt on first use.
+auth       include      system-auth
+auth       optional     pam_kwallet6.so
+account    include      system-auth
+password   include      system-auth
+session    include      system-auth
+session    optional     pam_kwallet6.so auto_start

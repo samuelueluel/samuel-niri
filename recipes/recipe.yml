@@ -313,7 +313,8 @@ modules:
         - tldr
         - man-db
         - hwinfo
-        - gnome-keyring
+        - kf6-kwallet                # KWallet daemon — implements org.freedesktop.secrets (used by Vivaldi/Chromium)
+        - kf6-kwallet-pam            # pam_kwallet6.so — auto-unlocks wallet at greetd login
         - python3
         - python3-evdev           # needed for keyd scripts
         - nodejs                  # required for Gemini CLI (npm install -g @google/gemini-cli)
