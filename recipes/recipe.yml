@@ -338,6 +338,7 @@ modules:
           - com.stremio.Stremio
           # System
           - io.missioncenter.MissionCenter
+          - io.github.dvlv.boxbuddyrs
 
   # ── Build patched niri_window_buttons waybar module ──────────────────────
   # Patch centers icon in highlight box when show_window_titles=false.
