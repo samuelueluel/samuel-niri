@@ -86,6 +86,11 @@ if [[ "$SHELL" != "$ZSH_PATH" ]]; then
     sudo usermod -s "$ZSH_PATH" "$(whoami)"
 fi
 
+# ── 8. Flatpak Overrides (Theme Access) ──────────────────────────────────────
+echo "Applying Flatpak overrides for Quod Libet theme access..."
+flatpak override --user --filesystem=xdg-config/gtk-3.0:ro io.github.quodlibet.QuodLibet || true
+flatpak override --user --filesystem=xdg-data/themes:ro io.github.quodlibet.QuodLibet || true
+
 echo ""
 echo "Done. If shell was changed, log out and back in for it to take effect."
 echo ""

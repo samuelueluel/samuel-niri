@@ -21,6 +21,8 @@ modules:
     remove:
       packages:
         - power-profiles-daemon
+        - firefox
+        - firefox-langpacks
 
   # ── RPM Fusion nonfree + tainted ─────────────────────────────────────────
   # base-main pre-configures RPM Fusion free; we add nonfree for codecs.
