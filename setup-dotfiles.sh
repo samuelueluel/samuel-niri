@@ -67,6 +67,27 @@ echo ""
 echo "Done. If shell was changed, log out and back in for it to take effect."
 echo ""
 echo "Manual steps still needed:"
+echo "  - Wallpapers — cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers"
+echo "  - Dropbox — sign in"
+echo "  - EasyEffects — presets are applied; open the app to confirm they loaded"
+~/.config/vivaldi-llm/Default/ 2>/dev/null || true
+    cp ~/system_config_git/vivaldi/llm/contextmenu.json    ~/.config/vivaldi-llm/Default/ 2>/dev/null || true
+fi
+
+# ── 5. Refresh desktop file MIME database ────────────────────────────────────
+update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
+
+# ── 6. Set zsh as default shell ──────────────────────────────────────────────
+ZSH_PATH="$(command -v zsh)"
+if [[ "$SHELL" != "$ZSH_PATH" ]]; then
+    echo "Setting zsh as default shell (requires password)..."
+    sudo usermod -s "$ZSH_PATH" "$(whoami)"
+fi
+
+echo ""
+echo "Done. If shell was changed, log out and back in for it to take effect."
+echo ""
+echo "Manual steps still needed:"
 echo "  - Vivaldi profiles (Preferences / contextmenu.json) — copy from:"
 echo "    ~/system_config_git/vivaldi/{casual,work,llm}/ to ~/.config/vivaldi-{casual,work,llm}/Default/"
 echo "  - Wallpapers — cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers"

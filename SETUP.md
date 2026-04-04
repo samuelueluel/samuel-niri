@@ -132,22 +132,9 @@ gemini   # browser OAuth on first run
 dropbox start -i
 ```
 
-**Vivaldi** — launch each profile once (Casual, Work, LLMs) to generate its data directory, then copy saved preferences.
-*(Requires `~/system_config_git` — see step 5.)*
+**Vivaldi** — The `setup-dotfiles.sh` script automatically copies your preferences and context menus for the Casual, Work, and LLMs profiles from your `system_config_git` repository. 
 
 **Important Note for Vivaldi RPM on Wayland:** Vivaldi may auto-generate its own `.desktop` files (e.g., `com.vivaldi.Vivaldi.Casual.desktop`) when profiles are launched. These default files lack the necessary Wayland flags (`--ozone-platform-hint=wayland`) and their filenames do not match the exact Niri/Waybar `app-id` window class. If Waybar icons stop working or Vivaldi hangs, ensure you delete the auto-generated ones: `rm ~/.local/share/applications/com.vivaldi.Vivaldi.*.desktop`. The correct ones applied by `chezmoi` are named exactly after their app-ids (e.g., `VivaldiCasual.desktop`).
-
-```bash
-# Copy preferences for each profile (casual, work, llm):
-cp ~/system_config_git/vivaldi/casual/Preferences      ~/.config/vivaldi-casual/Default/
-cp ~/system_config_git/vivaldi/casual/contextmenu.json ~/.config/vivaldi-casual/Default/
-
-cp ~/system_config_git/vivaldi/work/Preferences        ~/.config/vivaldi-work/Default/
-cp ~/system_config_git/vivaldi/work/contextmenu.json   ~/.config/vivaldi-work/Default/
-
-cp ~/system_config_git/vivaldi/llm/Preferences         ~/.config/vivaldi-llm/Default/
-cp ~/system_config_git/vivaldi/llm/contextmenu.json    ~/.config/vivaldi-llm/Default/
-```
 
 **Extensions** install normally through the Chrome Web Store — they live in their respective `~/.config/vivaldi-*/Default/`
 (mutable home dir) and survive reboots and image updates.
