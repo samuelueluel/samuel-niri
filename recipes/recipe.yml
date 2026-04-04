@@ -303,6 +303,10 @@ modules:
       packages:
         - vivaldi-stable
 
+  - type: script
+    scripts:
+      - update-vivaldi-ffmpeg.sh
+
   # ── Flatpaks ──────────────────────────────────────────────────────────────
   - type: default-flatpaks
     configurations:
