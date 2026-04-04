@@ -48,6 +48,11 @@ fi
 echo "Applying dotfiles via chezmoi..."
 chezmoi apply --force
 
+# ── 4.5. Clean up conflicting Vivaldi generated desktop files ────────────────
+# Vivaldi may generate files named com.vivaldi.Vivaldi.*.desktop which lack Wayland 
+# flags and conflict with our custom app-id named ones.
+rm -f ~/.local/share/applications/com.vivaldi.Vivaldi.*.desktop || true
+
 # ── 5. Refresh desktop file MIME database ────────────────────────────────────
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
 

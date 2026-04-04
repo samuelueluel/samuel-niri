@@ -57,7 +57,7 @@ nmtui
 
 ## 4. SSH keys
 
-Open Vivaldi (it's a flatpak, already installed), log into bitwarden.com, and retrieve
+Open Vivaldi (it's already installed), log into bitwarden.com, and retrieve
 your SSH keys from the secure notes you saved in step 0.
 
 ```bash
@@ -134,6 +134,8 @@ dropbox start -i
 
 **Vivaldi** — launch each profile once (Casual, Work, LLMs) to generate its data directory, then copy saved preferences.
 *(Requires `~/system_config_git` — see step 5.)*
+
+**Important Note for Vivaldi RPM on Wayland:** Vivaldi may auto-generate its own `.desktop` files (e.g., `com.vivaldi.Vivaldi.Casual.desktop`) when profiles are launched. These default files lack the necessary Wayland flags (`--ozone-platform-hint=wayland`) and their filenames do not match the exact Niri/Waybar `app-id` window class. If Waybar icons stop working or Vivaldi hangs, ensure you delete the auto-generated ones: `rm ~/.local/share/applications/com.vivaldi.Vivaldi.*.desktop`. The correct ones applied by `chezmoi` are named exactly after their app-ids (e.g., `VivaldiCasual.desktop`).
 
 ```bash
 # Copy preferences for each profile (casual, work, llm):
