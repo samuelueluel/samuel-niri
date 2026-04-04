@@ -27,7 +27,8 @@ mkdir -p \
     ~/.config \
     ~/.gnome2/accels \
     ~/.claude \
-    ~/.ssh
+    ~/.ssh \
+    ~/.npm-global/bin
 
 chmod 700 ~/.ssh
 
@@ -41,43 +42,44 @@ if [[ ! -d ~/.local/share/zsh/plugins/fzf-tab ]]; then
 fi
 
 # ── 4. Apply dotfiles ─────────────────────────────────────────────────────────
-# chezmoi will:
-#   - apply all config files (niri, waybar, kitty, alacritty, zsh, etc.)
-#   - run run_once_load-nemo-dconf.sh to set Nemo preferences
-#   - apply vivaldi launcher .desktop files to ~/.local/share/applications/
 echo "Applying dotfiles via chezmoi..."
 chezmoi apply --force
 
 # ── 4.5. Clean up conflicting Vivaldi generated desktop files ────────────────
-# Vivaldi may generate files named com.vivaldi.Vivaldi.*.desktop which lack Wayland 
-# flags and conflict with our custom app-id named ones.
 rm -f ~/.local/share/applications/com.vivaldi.Vivaldi.*.desktop || true
 
-# ── 5. Refresh desktop file MIME database ────────────────────────────────────
-update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
+# ── 4.6. Copy Vivaldi Preferences ────────────────────────────────────────────
+if [[ -d "$HOME/system_config_git/vivaldi" ]]; then
+    echo "Copying Vivaldi preferences..."
+    
+    mkdir -p ~/.config/vivaldi-casual/Default
+    cp ~/system_config_git/vivaldi/casual/Preferences      ~/.config/vivaldi-casual/Default/ 2>/dev/null || true
+    cp ~/system_config_git/vivaldi/casual/contextmenu.json ~/.config/vivaldi-casual/Default/ 2>/dev/null || true
 
-# ── 6. Set zsh as default shell ──────────────────────────────────────────────
-ZSH_PATH="$(command -v zsh)"
-if [[ "$SHELL" != "$ZSH_PATH" ]]; then
-    echo "Setting zsh as default shell (requires password)..."
-    sudo usermod -s "$ZSH_PATH" "$(whoami)"
-fi
+    mkdir -p ~/.config/vivaldi-work/Default
+    cp ~/system_config_git/vivaldi/work/Preferences        ~/.config/vivaldi-work/Default/ 2>/dev/null || true
+    cp ~/system_config_git/vivaldi/work/contextmenu.json   ~/.config/vivaldi-work/Default/ 2>/dev/null || true
 
-echo ""
-echo "Done. If shell was changed, log out and back in for it to take effect."
-echo ""
-echo "Manual steps still needed:"
-echo "  - Wallpapers — cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers"
-echo "  - Dropbox — sign in"
-echo "  - EasyEffects — presets are applied; open the app to confirm they loaded"
-~/.config/vivaldi-llm/Default/ 2>/dev/null || true
+    mkdir -p ~/.config/vivaldi-llm/Default
+    cp ~/system_config_git/vivaldi/llm/Preferences         ~/.config/vivaldi-llm/Default/ 2>/dev/null || true
     cp ~/system_config_git/vivaldi/llm/contextmenu.json    ~/.config/vivaldi-llm/Default/ 2>/dev/null || true
 fi
 
-# ── 5. Refresh desktop file MIME database ────────────────────────────────────
+# ── 5. Create Distrobox Dev Environment ──────────────────────────────────────
+echo "Setting up Distrobox dev-box..."
+if ! distrobox list | grep -q "dev-box"; then
+    distrobox create -Y -n dev-box -i registry.fedoraproject.org/fedora-toolbox:43
+fi
+
+echo "Installing dev tools inside distrobox (Node.js, Claude Code, Gemini CLI)..."
+distrobox enter dev-box -- sudo dnf install -y nodejs npm
+distrobox enter dev-box -- bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+distrobox enter dev-box -- bash -c 'npm config set prefix ~/.npm-global && npm install -g @google/gemini-cli'
+
+# ── 6. Refresh desktop file MIME database ────────────────────────────────────
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
 
-# ── 6. Set zsh as default shell ──────────────────────────────────────────────
+# ── 7. Set zsh as default shell ──────────────────────────────────────────────
 ZSH_PATH="$(command -v zsh)"
 if [[ "$SHELL" != "$ZSH_PATH" ]]; then
     echo "Setting zsh as default shell (requires password)..."
@@ -88,8 +90,6 @@ echo ""
 echo "Done. If shell was changed, log out and back in for it to take effect."
 echo ""
 echo "Manual steps still needed:"
-echo "  - Vivaldi profiles (Preferences / contextmenu.json) — copy from:"
-echo "    ~/system_config_git/vivaldi/{casual,work,llm}/ to ~/.config/vivaldi-{casual,work,llm}/Default/"
 echo "  - Wallpapers — cp -r ~/system_config_git/Wallpapers ~/Pictures/Wallpapers"
 echo "  - Dropbox — sign in"
 echo "  - EasyEffects — presets are applied; open the app to confirm they loaded"

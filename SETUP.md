@@ -93,31 +93,25 @@ It is not used by chezmoi.
 
 ---
 
-## 6. Run dotfiles setup
+## 6. Run dotfiles and dev setup
 
 ```bash
 bash ~/work-image/setup-dotfiles.sh
 ```
 
-This runs `chezmoi apply`, which deploys all config files (niri, waybar, zsh, etc.),
-vivaldi launcher .desktop files, and nemo settings.
-Log out and back in — this activates zsh.
+This script automates the core setup:
+- Deploys dotfiles via `chezmoi apply`.
+- Configures Vivaldi profiles and cleans up conflicting launchers.
+- Creates a **Distrobox** container (`dev-box`) and installs Node.js, Claude Code, and Gemini CLI inside it.
+- Sets Zsh as the default shell.
+
+Log out and back in — this activates your new environment.
 
 ---
 
-## 7. Install Claude Code and Gemini CLI
+## 7. Authenticate Claude and Gemini
 
-```bash
-# Claude Code — standalone binary installer (not npm)
-curl -fsSL https://claude.ai/install.sh | bash
-
-# Gemini CLI — npm
-mkdir -p ~/.npm-global
-npm config set prefix ~/.npm-global
-npm install -g @google/gemini-cli
-```
-
-Authenticate both:
+Because Claude and Gemini run inside the Distrobox container (via Zsh aliases), you can authenticate them normally:
 ```bash
 claude   # browser-based login on first run
 gemini   # browser OAuth on first run
