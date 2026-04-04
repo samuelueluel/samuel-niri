@@ -33,6 +33,7 @@ modules:
   # orca + speech-dispatcher*: screen reader + TTS stack, nothing depends on them
   # braille-printer-app: Braille printer support, not needed
   # hplip*: HP-specific printer drivers, no HP printer on this system
+  # gutenprint*: Epson/Canon printer drivers; Brother network printer uses IPP
   - type: dnf
     install:
       packages:
@@ -71,6 +72,9 @@ modules:
         - hplip
         - hplip-common
         - hplip-libs
+        - gutenprint
+        - gutenprint-cups
+        - gutenprint-libs
 
   # ── RPM Fusion nonfree + tainted ─────────────────────────────────────────
   # base-main pre-configures RPM Fusion free; we add nonfree for codecs.
