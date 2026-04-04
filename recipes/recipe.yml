@@ -23,14 +23,16 @@ modules:
         - firefox-langpacks
 
   # ── Swap glibc-all-langpacks → glibc-langpack-en ─────────────────────────
-  # Must be a separate transaction: doing install+remove together in one dnf
-  # block causes the solver to mark glibc unresolvable (Fedora 43 now treats
-  # glibc-all-langpacks as required by glibc), which cascades to dnf5/libc.so.6.
+  # In Fedora 43, glibc requires glibc-langpack at all times. The dnf module
+  # runs removes before installs, so install+remove in one block fails.
+  # Solution: two separate blocks — install the replacement first, then remove.
   # glibc-all-langpacks: 226MB for 100+ locales; replace with English-only.
   - type: dnf
     install:
       packages:
         - glibc-langpack-en
+
+  - type: dnf
     remove:
       packages:
         - glibc-all-langpacks
