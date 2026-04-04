@@ -16,11 +16,9 @@ modules:
         destination: /
 
   # ── Remove conflicting base-image packages ────────────────────────────────
-  # power-profiles-daemon conflicts with auto-cpufreq (both control CPU scaling)
   - type: dnf
     remove:
       packages:
-        - power-profiles-daemon
         - firefox
         - firefox-langpacks
 
@@ -163,6 +161,7 @@ modules:
         - blueman
         - bluez-tools
         - upower
+        - power-profiles-daemon
         - fwupd
         - keyd
         - playerctl
@@ -171,7 +170,7 @@ modules:
         # - mesa-va-drivers       # already in base-main (ublue upgrades it)
         # - libva-utils           # already in base-main
         - mesa-demos              # glxinfo, eglinfo etc.
-        - thermald                # thermal management alongside auto-cpufreq
+        - thermald                # thermal management
 
   # ── Networking infrastructure ──────────────────────────────────────────────
   - type: dnf
@@ -366,12 +365,6 @@ modules:
     scripts:
       - install-nwg-look.sh
 
-  # ── Install auto-cpufreq from source ──────────────────────────────────────
-  # principis/auto-cpufreq COPR does not publish Fedora 43 builds
-  - type: script
-    scripts:
-      - install-auto-cpufreq.sh
-
   # ── Install yazi binary ────────────────────────────────────────────────────
   # Not in Fedora repos; download pre-built musl binary from GitHub releases
   - type: script
@@ -408,7 +401,7 @@ modules:
         - bluetooth.service
         - libvirtd.service
         - keyd.service
-        - auto-cpufreq.service
+        - power-profiles-daemon.service
         - thermald.service
         - avahi-daemon.service
         - cups.service
