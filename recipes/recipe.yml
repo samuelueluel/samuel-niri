@@ -289,37 +289,37 @@ modules:
       install-weak-deps: false
       packages:
         - git
-        - rsync
+        # - rsync                 # already in base-main
         - fd-find
         - chezmoi                 # dotfile manager (replaces stow for this image)
         # - smartmontools         # already in base-main
-        - usbutils
+        # - usbutils              # already in base-main
         - inxi
-        - dmidecode
+        # - dmidecode             # already in base-main
         - hdparm
         - sg3_utils
         - lsscsi
         - sysfsutils
-        - whois
-        - ethtool
-        - bind-utils
-        - iputils                 # ping etc. (replaces inetutils from Arch)
-        - hostname                # hostname command
+        # - whois                 # already in base-main
+        # - ethtool               # already in base-main
+        # - bind-utils            # already in base-main
+        # - iputils               # already in base-main
+        # - hostname              # already in base-main
         - inotify-tools
         - plocate
         - fastfetch
         - duf
         - glances
         - tldr
-        - man-db
+        # - man-db                # already in base-main
         - hwinfo
-        - kf6-kwallet                # KWallet daemon — implements org.freedesktop.secrets (used by Vivaldi/Chromium)
-        - kf6-kwallet-pam            # pam_kwallet6.so — auto-unlocks wallet at greetd login
-        - python3
-        - python3-evdev           # needed for keyd scripts
+        # gnome-keyring (from base-main) handles org.freedesktop.secrets for Vivaldi/Chromium
+        # kf6-kwallet / kf6-kwallet-pam: removed — no PAM auto-unlock in Fedora 43 and gnome-keyring covers the use case
+        # - python3               # already in base-main
+        # - python3-evdev         # already in base-main
         - nodejs                  # required for Gemini CLI (npm install -g @google/gemini-cli)
-        - os-prober               # GRUB: detect Windows for dual-boot
-        - cosign                  # container image signing/verification
+        # - os-prober             # already in base-main
+        # - cosign                # already in base-main
 
   # ── Themes + appearance ────────────────────────────────────────────────────
   - type: dnf
