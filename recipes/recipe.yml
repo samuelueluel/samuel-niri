@@ -22,8 +22,20 @@ modules:
         - firefox
         - firefox-langpacks
 
+  # ── Swap glibc-all-langpacks → glibc-langpack-en ─────────────────────────
+  # Must be a separate transaction: doing install+remove together in one dnf
+  # block causes the solver to mark glibc unresolvable (Fedora 43 now treats
+  # glibc-all-langpacks as required by glibc), which cascades to dnf5/libc.so.6.
+  # glibc-all-langpacks: 226MB for 100+ locales; replace with English-only.
+  - type: dnf
+    install:
+      packages:
+        - glibc-langpack-en
+    remove:
+      packages:
+        - glibc-all-langpacks
+
   # ── Remove base-image bloat ────────────────────────────────────────────────
-  # glibc-all-langpacks: 226MB for 100+ locales; replace with English-only below
   # python3-botocore: AWS SDK (~109MB), no reverse deps, no use on this system
   # geolite2-*: MaxMind GeoIP databases pulled in by base, not required by anything
   # ibus + sub-packages: CJK/multilingual input framework (~200MB+); display of
@@ -35,12 +47,8 @@ modules:
   # hplip*: HP-specific printer drivers, no HP printer on this system
   # gutenprint*: Epson/Canon printer drivers; Brother network printer uses IPP
   - type: dnf
-    install:
-      packages:
-        - glibc-langpack-en          # replaces glibc-all-langpacks
     remove:
       packages:
-        - glibc-all-langpacks
         - python3-botocore
         - geolite2-city
         - geolite2-country
