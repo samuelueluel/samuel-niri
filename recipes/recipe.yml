@@ -154,11 +154,9 @@ modules:
     install:
       install-weak-deps: false
       packages:
-        - sddm
-        - sddm-themes
-        - qt5-qtgraphicaleffects   # SDDM theme blur/visual effects
-        - qt5-qtquickcontrols2     # SDDM theme QML controls
-        - qt5-qtsvg                # SDDM theme SVG support
+        - greetd
+        - gtkgreet
+        - cage
 
   # ── Terminals + shell ─────────────────────────────────────────────────────
   # Note: powerlevel10k and fzf-tab managed via dotfiles
@@ -459,16 +457,23 @@ modules:
     scripts:
       - install-msfonts.sh
 
-  # ── Configure SDDM ────────────────────────────────────────────────────────
+  # ── Configure greetd + gtkgreet ───────────────────────────────────────────
   - type: script
     scripts:
-      - setup-sddm.sh
+      - setup-greetd.sh
+
+  # ── Custom SELinux policy ─────────────────────────────────────────────────
+  # Allow xdm_t (greetd) to start/status systemd unit files.
+  # Needed if niri-session triggers systemctl --user under the xdm_t context.
+  - type: script
+    scripts:
+      - setup-selinux.sh
 
   # ── Systemd services ──────────────────────────────────────────────────────
   - type: systemd
     system:
       enabled:
-        - sddm.service
+        - greetd.service
         - bluetooth.service
         - libvirtd.service
         - keyd.service
@@ -479,7 +484,7 @@ modules:
         - fstrim.timer
       disabled:
         - gdm.service
-        - greetd.service
+        - sddm.service
     user:
       enabled:
         # dropbox.service: Dropbox RPM doesn't ship a systemd unit; use XDG autostart instead
