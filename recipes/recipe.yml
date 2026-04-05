@@ -229,7 +229,8 @@ modules:
         - upower
         - power-profiles-daemon
         - fwupd
-        - fprintd                  # provides pam_fprintd.so; satisfies PAM fingerprint stack
+        - fprintd                  # fingerprint daemon
+        - fprintd-pam              # provides pam_fprintd.so; satisfies PAM fingerprint stack
         - keyd
         - playerctl
         - ModemManager
