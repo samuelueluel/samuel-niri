@@ -4,10 +4,12 @@ set -euo pipefail
 
 mkdir -p /etc/sddm.conf.d
 
-# Create the sddm system user/group from the RPM's sysusers.d definition.
-# In container/ostree image builds, systemd-sysusers is not called automatically,
-# so the sddm greeter user won't exist without this — causing a black screen at boot.
-systemd-sysusers
+# Create the sddm system user/group directly.
+# systemd-sysusers is unreliable in container/ostree image builds — the user
+# may not end up in the committed /etc/passwd, causing a black screen at boot.
+if ! getent passwd sddm &>/dev/null; then
+    useradd -r -d /var/lib/sddm -s /sbin/nologin -c "SDDM Greeter Account" sddm
+fi
 
 # Create directories the sddm RPM owns, with correct ownership.
 # /var/lib/sddm persists across boots; /run/sddm is handled by tmpfiles at runtime.
