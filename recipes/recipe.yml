@@ -104,6 +104,7 @@ modules:
         - yalter/niri            # niri compositor
         - che/zed                # Zed editor
         - alternateved/cliphist  # clipboard history daemon
+        - reisaraujo-miguel/Anyrun # Anyrun launcher
       files:
         - https://github.com/terrapkg/subatomic-repos/raw/main/terra.repo
         # dropbox.repo is baked in via the files module (avoids CI network block)
@@ -114,6 +115,7 @@ modules:
         - zed
         - cliphist
         - dropbox
+        - anyrun
 
   # ── Wayland compositor stack ──────────────────────────────────────────────
   - type: dnf
