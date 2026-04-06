@@ -430,6 +430,7 @@ modules:
     scripts:
       - build-niri-window-buttons.sh
       - build-anyrun.sh
+      - setup-anyrun.sh
 
   # ── Build nwg-look from source ────────────────────────────────────────────
   # dustee071/unstable-apps COPR does not publish Fedora 43 builds
