@@ -38,4 +38,6 @@ jobs:
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
           verify_install: true # testing --- may be source of errors; delete this line if so
-          build_chunked_oci: true
+          chunkah: true
+
+
