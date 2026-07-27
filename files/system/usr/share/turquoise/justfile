@@ -390,7 +390,7 @@ distroboxes:
       set -euo pipefail
       mkdir -p "$HOME/.config/stremio-enhanced/streamingserver"
       wget -O "$HOME/.config/stremio-enhanced/streamingserver/server.js" \
-        "https://dl.strem.io/server/v4.20.18/desktop/server.js"
+        "https://dl.strem.io/server/v4.20.17/desktop/server.js"
     '
     distrobox enter --name arch-box -- distrobox-export --app stremio-enhanced
     distrobox enter --name arch-box -- distrobox-export --app rustdesk
@@ -455,6 +455,18 @@ update:
         podman build --no-cache -t localhost/pi-safe:latest -f "$HOME/dotfiles/dot_pi/Containerfile" "$HOME/dotfiles" || true
     else
         echo -e "\033[31m  pi-safe Containerfile not found, skipping.\033[0m"
+    fi
+
+    echo -e "\n\033[34m=== Updating Strix Halo ROCm Backend in Lemonade ===\033[0m"
+    if podman inspect lemonade 2>/dev/null | grep -q 'lemonade-rocm'; then
+        echo -e "\033[36m  \$ podman pull docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 ...\033[0m"
+        podman pull docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 || true
+        podman run --rm -v lemonade-llama:/out:rw docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 bash -c 'cp -a /usr/local/bin/* /out/ && cp -a /usr/local/lib64/* /out/' || true
+        podman run --rm -v lemonade-rocm:/out:rw docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 cp -a /lib64/libcrypto.so.3* /lib64/libssl.so.3* /out/ || true
+        podman exec lemonade bash -c 'cp -a /opt/lemonade/llama/* /root/.cache/lemonade/bin/llamacpp/vulkan/' 2>/dev/null || true
+        podman restart lemonade || true
+    else
+        echo -e "\033[36m  Strix Halo ROCm backend not active on Lemonade (Vulkan in use) — harmlessly skipping.\033[0m"
     fi
 
     echo -e "\n\033[34m=== Updating Homebrew and Packages ===\033[0m"
