@@ -732,6 +732,7 @@ modules:
         - stb_image_write-devel
         - libsecret-devel
         - libsodium-devel
+        - libjxl-devel
 
   # ── Configure greetd + gtkgreet ───────────────────────────────────────────
   - type: script
