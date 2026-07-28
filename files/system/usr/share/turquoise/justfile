@@ -190,16 +190,23 @@ pipx:
         # Split into package spec and extra pipx flags (e.g. --python python3.13)
         pkg_name=$(echo "$entry" | awk '{print $1}')
         extra_flags=$(echo "$entry" | cut -s -d' ' -f2-)
-        # Extract base package name for 'pipx list' check (strips [extras])
-        base_name=$(echo "$pkg_name" | sed 's/\[.*//')
-        if pipx list --short | grep -q "^${base_name} "; then
-            echo "  Upgrading $base_name..."
-            pipx upgrade "$base_name" &>/dev/null || true
-        else
-            echo "  Installing $pkg_name..."
+        if [[ "$pkg_name" =~ ^(git\+|https?://|http://|git@|file://|\.|\/) ]]; then
+            echo "  Installing/Upgrading $pkg_name..."
             # shellcheck disable=SC2086
-            pipx install "$pkg_name" $extra_flags \
-                || echo -e "  \033[33m  ↳ install failed — skipping (check log or run manually)\033[0m"
+            pipx install --force "$pkg_name" $extra_flags \
+                || echo -e "  \033[33m  ↳ install/upgrade failed — skipping (check log or run manually)\033[0m"
+        else
+            # Extract base package name for 'pipx list' check (strips [extras] and version specs)
+            base_name=$(echo "$pkg_name" | sed -E 's/\[.*\]//; s/[<>=!~].*//')
+            if pipx list --short | grep -q "^${base_name} "; then
+                echo "  Upgrading $base_name..."
+                pipx upgrade "$base_name" &>/dev/null || true
+            else
+                echo "  Installing $pkg_name..."
+                # shellcheck disable=SC2086
+                pipx install "$pkg_name" $extra_flags \
+                    || echo -e "  \033[33m  ↳ install failed — skipping (check log or run manually)\033[0m"
+            fi
         fi
     done < "$PIPX_FILE"
 
