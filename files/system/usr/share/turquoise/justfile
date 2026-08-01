@@ -464,16 +464,13 @@ update:
         echo -e "\033[31m  pi-safe Containerfile not found, skipping.\033[0m"
     fi
 
-    echo -e "\n\033[34m=== Updating Strix Halo ROCm Backend in Lemonade ===\033[0m"
-    if podman inspect lemonade 2>/dev/null | grep -q 'lemonade-rocm'; then
-        echo -e "\033[36m  \$ podman pull docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 ...\033[0m"
+    echo -e "\n\033[34m=== Updating Dual-Toolbox LLM Engines in Lemonade ===\033[0m"
+    if podman inspect lemonade 2>/dev/null | grep -q 'lemonade'; then
+        echo -e "\033[36m  Syncing ROCm 7.14 and Nathanw1014 Vulkan binaries...\033[0m"
         podman pull docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 || true
-        podman run --rm -v lemonade-llama:/out:rw,z docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 bash -c 'cp -a /usr/local/bin/* /out/ && cp -a /usr/local/lib64/* /out/' || true
-        podman run --rm -v lemonade-rocm:/out:rw,z docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 cp -a /lib64/libcrypto.so.3* /lib64/libssl.so.3* /out/ || true
-        podman exec lemonade bash -c 'cp -a /opt/lemonade/llama/* /root/.cache/lemonade/bin/llamacpp/vulkan/' 2>/dev/null || true
+        podman run --rm -v lemonade-llama:/out:rw,z docker.io/higaetan/strix-halo-llamacpp-toolbox:rocm-7.14 bash -c 'mkdir -p /out/rocm/rocm && cp -a /usr/local/bin/* /out/rocm/ && cp -a /usr/local/lib64/* /out/rocm/ && cp -a /opt/rocm/* /out/rocm/rocm/ && cp -a /lib64/libcrypto.so.3* /lib64/libssl.so.3* /out/rocm/' || true
+        podman run --rm -v lemonade-llama:/out:rw,z docker.io/fedora:44 bash -c 'mkdir -p /out/vulkan && curl -L https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.2/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /out/vulkan --strip-components=1' || true
         podman restart lemonade || true
-    else
-        echo -e "\033[36m  Strix Halo ROCm backend not active on Lemonade (Vulkan in use) — harmlessly skipping.\033[0m"
     fi
 
     echo -e "\n\033[34m=== Updating Homebrew and Packages ===\033[0m"

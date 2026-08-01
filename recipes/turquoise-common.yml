@@ -168,6 +168,7 @@ modules:
         - libsodium # sodium crypto library — noctalia runtime dep
         - libjxl # JPEG XL library — noctalia runtime dep
         - libical # iCalendar library — noctalia runtime dep
+        - libsndfile # sound file library — noctalia runtime dep
         # dex: not in Fedora repos — XDG Autostart launcher, add via script if needed
 
   # ── Display manager ───────────────────────────────────────────────────────
@@ -469,7 +470,7 @@ modules:
   #   sdbus-cpp-devel, freetype-devel, fontconfig-devel, cairo-devel, pango-devel,
   #   librsvg2-devel, libxkbcommon-devel, polkit-devel, pipewire-devel, libcurl-devel,
   #   jemalloc-devel, mesa-libEGL-devel, mesa-libGLES-devel, libepoxy-devel,
-  #   libwebp-devel, pam-devel, wireplumber-devel, md4c-devel, json-devel, tomlplusplus-devel, harfbuzz-devel, libxml2-devel, stb-devel, stb_image-devel, stb_image_resize2-devel, stb_image_write-devel, libjxl-devel, libical-devel   ← noctalia-shell
+  #   libwebp-devel, pam-devel, wireplumber-devel, md4c-devel, json-devel, tomlplusplus-devel, harfbuzz-devel, libxml2-devel, stb-devel, stb_image-devel, stb_image_resize2-devel, stb_image_write-devel, libjxl-devel, libical-devel, libsndfile-devel   ← noctalia-shell
   - type: dnf
     install:
       install-weak-deps: false
@@ -525,6 +526,7 @@ modules:
         - libsodium-devel
         - libjxl-devel
         - libical-devel
+        - libsndfile-devel
 
   # ── Build noctalia-shell v5 from source ───────────────────────────────────
   # Replaces the lionheartp/Hyprland COPR RPM; installs to /usr/bin + /usr/share/noctalia/
@@ -736,6 +738,7 @@ modules:
         - libsodium-devel
         - libjxl-devel
         - libical-devel
+        - libsndfile-devel
 
   # ── Configure greetd + gtkgreet ───────────────────────────────────────────
   - type: script
