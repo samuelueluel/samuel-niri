@@ -264,7 +264,7 @@ system:
     ZSH_PATH="$(command -v zsh)"
     [[ "$SHELL" == "$ZSH_PATH" ]] || sudo usermod -s "$ZSH_PATH" "$ME"
 
-# Replace default zRAM with a 16GB swap file on /var (optional; not in setup)
+# Replace default zRAM with a 32GB swap file on /var (optional; not in setup)
 swap:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -277,7 +277,7 @@ swap:
     sudo swapoff /dev/zram0 2>/dev/null || true
     # fallocate doesn't work on btrfs; use btrfs-native mkswapfile instead
     sudo rm -f /var/swapfile
-    sudo btrfs filesystem mkswapfile --size 16G /var/swapfile
+    sudo btrfs filesystem mkswapfile --size 32G /var/swapfile
     sudo swapon /var/swapfile
     grep -q '/var/swapfile' /etc/fstab || echo '/var/swapfile none swap defaults 0 0' | sudo tee -a /etc/fstab
     swapon --show
@@ -456,6 +456,37 @@ update:
         echo -e "\033[31m  Distrobox not found, skipping.\033[0m"
     fi
 
+    echo -e "\n\033[34m=== Updating MCP Servers ===\033[0m"
+    if command -v uv >/dev/null; then
+        echo -e "\033[36m  Upgrading mcp-stata...\033[0m"
+        uv tool upgrade mcp-stata 2>/dev/null || true
+    fi
+
+    if command -v turbovault >/dev/null; then
+        echo -e "\033[36m  Checking TurboVault updates...\033[0m"
+        latest_tag=$(curl -s --connect-timeout 5 https://api.github.com/repos/Epistates/turbovault/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+        current_ver=$(turbovault --version 2>/dev/null | awk '{print $2}' || true)
+        if [[ -n "$latest_tag" && "v${current_ver}" != "$latest_tag" && "$current_ver" != "$latest_tag" ]]; then
+            echo -e "\033[33m  Updating TurboVault from ${current_ver:-unknown} to ${latest_tag}...\033[0m"
+            tar_url="https://github.com/Epistates/turbovault/releases/download/${latest_tag}/turbovault-x86_64-unknown-linux-gnu.tar.gz"
+            tmp_tar="/tmp/turbovault-latest.tar.gz"
+            if curl -fL -o "$tmp_tar" "$tar_url"; then
+                tar -xzf "$tmp_tar" -C "$HOME/.local/bin" turbovault-x86_64-unknown-linux-gnu
+                mv -f "$HOME/.local/bin/turbovault-x86_64-unknown-linux-gnu" "$HOME/.local/bin/turbovault"
+                chmod +x "$HOME/.local/bin/turbovault"
+                rm -f "$tmp_tar"
+                echo -e "\033[32m  Host turbovault updated to ${latest_tag}.\033[0m"
+            fi
+        else
+            echo -e "  TurboVault is up to date (${current_ver:-1.6.0})."
+        fi
+    fi
+
+    if [[ -f "$HOME/.agents/mcp/searxng/venv/bin/pip" ]]; then
+        echo -e "\033[36m  Updating SearxNG MCP virtualenv dependencies...\033[0m"
+        "$HOME/.agents/mcp/searxng/venv/bin/pip" install --upgrade -q mcp requests 2>/dev/null || true
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
@@ -483,9 +514,10 @@ update:
             cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
             cmake --build build --config Release -j$(nproc)
             mkdir -p /out/vulkan
-            curl -L https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.2/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /out/vulkan --strip-components=1 || true
-            cp build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/ || true
-            cp -P build/bin/*.so* /out/vulkan/bin/ 2>/dev/null || true
+            curl -L https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.4/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /out/vulkan --strip-components=1 || true
+            rm -f /out/vulkan/bin/lib*.so*
+            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/ || true
+            cp -Pf build/bin/*.so* /out/vulkan/bin/ 2>/dev/null || true
             
             echo "Building ROCm (gaetan-puleo)..."
             export CC=/opt/rocm/bin/amdclang
@@ -495,11 +527,34 @@ update:
             cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1151 -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
             cmake --build build --config Release -j$(nproc)
             mkdir -p /out/rocm/rocm
-            cp build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/rocm/ || true
+            rm -f /out/rocm/llama-server /out/rocm/llama-cli /out/rocm/llama-bench /out/rocm/lib*.so*
+            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/rocm/ || true
+            cp -Pf build/bin/*.so* /out/rocm/ 2>/dev/null || true
             cp -a /opt/rocm/lib/* /out/rocm/rocm/ 2>/dev/null || true
             cp -a /usr/lib/x86_64-linux-gnu/libssl.so.* /usr/lib/x86_64-linux-gnu/libcrypto.so.* /out/rocm/ 2>/dev/null || true
         ' || true
+
+        echo -e "\033[36m  Syncing MoE/Dense dispatch wrapper (canonical: /usr/share/turquoise/llama-dispatch-wrapper.sh)...\033[0m"
+        # lemond v10.8 launches /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server for
+        # llamacpp_backend=vulkan — NOT /opt/lemonade/llama/llama-server. Both locations must
+        # hold this wrapper or DeepSeek models silently misroute to the ROCm engine (or a
+        # Lemonade image upgrade overwrites the store copy with a stock binary).
+        WRAPPER_SRC=/usr/share/turquoise/llama-dispatch-wrapper.sh
+        if [[ -f "$WRAPPER_SRC" ]]; then
+            podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server || true
+            podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
+            podman exec lemonade chmod +x /opt/lemonade/llama/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
+        else
+            echo -e "\033[31m  WARNING: $WRAPPER_SRC not found (image predates wrapper deployment) — skipping wrapper sync.\033[0m"
+        fi
+
         podman restart lemonade || true
+        sleep 3
+        if podman exec lemonade grep -q DeepSeek /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server 2>/dev/null; then
+            echo -e "\033[32m  Dispatch wrapper verified (DeepSeek -> Vulkan routing intact).\033[0m"
+        else
+            echo -e "\033[31m  WARNING: dispatch wrapper missing DeepSeek patterns — DeepSeek models will misroute to ROCm!\033[0m"
+        fi
     fi
 
     echo -e "\n\033[34m=== Updating Homebrew and Packages ===\033[0m"
