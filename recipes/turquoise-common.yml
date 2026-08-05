@@ -116,7 +116,6 @@ modules:
           - kernel-core
           - kernel-modules
           - kernel-modules-extra
-          - kernel-devel
 
   # ── COPR + external repos, plus their packages ────────────────────────────
   - type: dnf
