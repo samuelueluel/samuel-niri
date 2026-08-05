@@ -116,6 +116,14 @@ modules:
           - kernel-core
           - kernel-modules
           - kernel-modules-extra
+          - kernel-devel
+      - from-repo: coprdep:copr.fedorainfracloud.org:group_kernel-vanilla:fedora
+        packages:
+          - kernel
+          - kernel-core
+          - kernel-modules
+          - kernel-modules-extra
+          - kernel-devel
 
   # ── COPR + external repos, plus their packages ────────────────────────────
   - type: dnf
