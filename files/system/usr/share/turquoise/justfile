@@ -482,6 +482,43 @@ update:
         fi
     fi
 
+    if command -v turbovault-http >/dev/null; then
+        echo -e "\033[36m  Checking TurboVault (http build) updates...\033[0m"
+        latest_tag=$(curl -s --connect-timeout 5 https://api.github.com/repos/Epistates/turbovault/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+        current_ver=$(turbovault-http --version 2>/dev/null | awk '{print $2}' || true)
+        if [[ -n "$latest_tag" && "v${current_ver}" != "$latest_tag" && "$current_ver" != "$latest_tag" ]]; then
+            echo -e "\033[33m  Rebuilding TurboVault-http (${current_ver:-unknown} -> ${latest_tag})...\033[0m"
+            SRC_TV="$HOME/.local/src/turbovault"
+            if [[ -d "$SRC_TV/.git" ]]; then
+                git -C "$SRC_TV" fetch --tags --quiet
+                if git -C "$SRC_TV" checkout --quiet "$latest_tag" 2>/dev/null; then
+                    if bash "$HOME/.local/bin/tv-fix-tool-schemas" "$SRC_TV"; then
+                        if podman run --rm \
+                            -v "$SRC_TV":/src:z \
+                            -v tv-cargo-cache:/usr/local/cargo \
+                            -w /src \
+                            rust:1.90-bookworm \
+                            bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq cmake libssl-dev pkg-config build-essential >/dev/null 2>&1; cargo build --release --features http'; then
+                            install -m755 "$SRC_TV/target/release/turbovault" "$HOME/.local/bin/turbovault-http"
+                            systemctl --user restart turbovault-web-ro turbovault-web-full 2>/dev/null || true
+                            echo -e "\033[32m  turbovault-http rebuilt to ${latest_tag}.\033[0m"
+                        else
+                            echo -e "\033[31m  Build failed; keeping previous turbovault-http.\033[0m"
+                        fi
+                    else
+                        echo -e "\033[33m  Schema patch could not be applied; skipping rebuild to avoid shipping an unpatched binary.\033[0m"
+                    fi
+                else
+                    echo -e "\033[33m  Checkout of ${latest_tag} failed, skipping.\033[0m"
+                fi
+            else
+                echo -e "\033[33m  Skipping: no checkout at ~/.local/src/turbovault (clone: git clone https://github.com/Epistates/turbovault ~/.local/src/turbovault)\033[0m"
+            fi
+        else
+            echo -e "  TurboVault-http is up to date (${current_ver:-1.6.0})."
+        fi
+    fi
+
     if [[ -f "$HOME/.agents/mcp/searxng/venv/bin/pip" ]]; then
         echo -e "\033[36m  Updating SearxNG MCP virtualenv dependencies...\033[0m"
         "$HOME/.agents/mcp/searxng/venv/bin/pip" install --upgrade -q mcp requests 2>/dev/null || true
@@ -514,7 +551,7 @@ update:
             cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
             cmake --build build --config Release -j$(nproc)
             mkdir -p /out/vulkan
-            curl -L https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.4/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /out/vulkan --strip-components=1 || true
+            curl -L https://github.com/Nathanw1014/strix-halo-llamacpp/releases/latest/download/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /out/vulkan --strip-components=1 || true
             rm -f /out/vulkan/bin/lib*.so*
             cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/ || true
             cp -Pf build/bin/*.so* /out/vulkan/bin/ 2>/dev/null || true
