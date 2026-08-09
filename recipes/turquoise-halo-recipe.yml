@@ -32,16 +32,13 @@ modules:
       - ttm.pages_limit=32505856
 
   # ── Webcam kmod — AMD ISP4 (doc 3.B) ──────────────────────────────────────
-  # Out-of-tree driver until kernel 7.2 mainlines amd_isp4_capture. Built from the
-  # abn/amd-isp4-capture-kmod COPR akmod *at image-build time* by build-isp4-akmod.sh,
-  # because (a) the akmod's root %post can't run akmods in the build container and
-  # (b) akmods.service is skipped at boot on bootc/ostree — so it can't build on
-  # first boot. Secure Boot is disabled in BIOS (vanilla kernel), so the unsigned
-  # module loads directly.
-  # REMOVE this block + files/scripts/build-isp4-akmod.sh when kernel 7.2 lands (3.F).
+  # Mainlined in kernel 7.2 (CONFIG_VIDEO_AMD_ISP4). Out-of-tree akmod build disabled.
+  # - build-isp4-akmod.sh
+
+  # ── Wi-Fi kmod — MT7925 ───────────────────────────────────────────────────
   - type: script
     scripts:
-      - build-isp4-akmod.sh
+      # - build-isp4-akmod.sh
       - build-mt7925-kmod.sh
 
   # ── sched-ext userspace schedulers (doc 7) ────────────────────────────────

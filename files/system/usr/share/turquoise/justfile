@@ -264,23 +264,47 @@ system:
     ZSH_PATH="$(command -v zsh)"
     [[ "$SHELL" == "$ZSH_PATH" ]] || sudo usermod -s "$ZSH_PATH" "$ME"
 
-# Replace default zRAM with a 32GB swap file on /var (optional; not in setup)
+# Configure 32GB swap file on /var and enable zswap (zstd) + swappiness 60
 swap:
     #!/usr/bin/env bash
     set -euo pipefail
-    if swapon --show | grep -q '/var/swapfile'; then
-        echo "Swap file already active, nothing to do."
-        exit 0
-    fi
+    echo "=== Configuring Swap (32GB file on /var + zswap zstd + swappiness 60) ==="
+
+    # 1. Disable ZRAM in favor of zswap + physical swapfile
     sudo touch /etc/systemd/zram-generator.conf
     sudo systemctl mask systemd-zram-setup@zram0.service 2>/dev/null || true
     sudo swapoff /dev/zram0 2>/dev/null || true
-    # fallocate doesn't work on btrfs; use btrfs-native mkswapfile instead
-    sudo rm -f /var/swapfile
-    sudo btrfs filesystem mkswapfile --size 32G /var/swapfile
-    sudo swapon /var/swapfile
-    grep -q '/var/swapfile' /etc/fstab || echo '/var/swapfile none swap defaults 0 0' | sudo tee -a /etc/fstab
+
+    # 2. Ensure /var/swapfile exists and is active
+    if ! swapon --show | grep -q '/var/swapfile'; then
+        echo "Creating 32GB swapfile on /var..."
+        sudo rm -f /var/swapfile
+        sudo btrfs filesystem mkswapfile --size 32G /var/swapfile
+        sudo swapon /var/swapfile
+        grep -q '/var/swapfile' /etc/fstab || echo '/var/swapfile none swap defaults 0 0' | sudo tee -a /etc/fstab
+    else
+        echo "Swapfile /var/swapfile already active."
+    fi
+
+    # 3. Enable zswap live & set swappiness
+    echo "Enabling zswap (zstd) and swappiness 60 live..."
+    sudo modprobe zstd 2>/dev/null || true
+    echo zstd | sudo tee /sys/module/zswap/parameters/compressor >/dev/null
+    echo 1 | sudo tee /sys/module/zswap/parameters/enabled >/dev/null
+    sudo sysctl vm.swappiness=60 >/dev/null
+
+    # 4. Persist zswap and swappiness across reboots
+    echo "Setting persistent zswap & swappiness configuration..."
+    sudo mkdir -p /etc/tmpfiles.d /etc/sysctl.d
+    printf 'w- /sys/module/zswap/parameters/compressor - - - - zstd\nw- /sys/module/zswap/parameters/enabled - - - - 1\n' | sudo tee /etc/tmpfiles.d/zswap.conf >/dev/null
+    printf 'vm.swappiness = 60\n' | sudo tee /etc/sysctl.d/99-swappiness.conf >/dev/null
+
+    echo -e "\n=== Swap Status ==="
     swapon --show
+    echo -n "zswap enabled: " && cat /sys/module/zswap/parameters/enabled
+    echo -n "zswap compressor: " && cat /sys/module/zswap/parameters/compressor
+    echo -n "vm.swappiness: " && sysctl -n vm.swappiness
+
 
 # Configure SSH agent socket and load personal key (requires ~/.ssh/id_ed25519; not in setup)
 ssh-setup:
@@ -522,6 +546,32 @@ update:
     if [[ -f "$HOME/.agents/mcp/searxng/venv/bin/pip" ]]; then
         echo -e "\033[36m  Updating SearxNG MCP virtualenv dependencies...\033[0m"
         "$HOME/.agents/mcp/searxng/venv/bin/pip" install --upgrade -q mcp requests 2>/dev/null || true
+    fi
+
+    # zotero-mcp-server: upgrade + re-apply the linked-file fulltext patch (idempotent).
+    # Patch: tools/retrieval.py gates local-disk extraction behind is_local_mode(); the
+    # hybrid server falls through to download paths that 500/404 on linked file://
+    # attachments. Marker comment: [local patch]. See General-Tooling §3.2.3.
+    if command -v uv >/dev/null; then
+        echo -e "\033[36m  Upgrading zotero-mcp-server...\033[0m"
+        uv tool upgrade 'zotero-mcp-server[semantic]' 2>/dev/null || true   # [semantic] keeps chromadb+sentence-transformers (zotero semantic search)
+    fi
+
+    echo -e "\033[36m  Re-applying zotero-mcp linked-file fulltext patch...\033[0m"
+    ZMP=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -path "*zotero_mcp/tools/retrieval.py" 2>/dev/null | head -1)
+    ZPATCH=/usr/share/turquoise/zotero-mcp-patch.py
+    [[ -f "$ZPATCH" ]] || ZPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-patch.py"
+    if [[ -z "$ZMP" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping patch.\033[0m"
+    elif [[ ! -f "$ZPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZPATCH" "$ZMP" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mPatch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch) echo -e "  \033[33mWARNING: retrieval.py pattern changed upstream; patch not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mPatch failed; review manually.\033[0m" ;;
+        esac
     fi
 
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"

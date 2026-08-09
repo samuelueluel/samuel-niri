@@ -25,6 +25,9 @@ trap 'rm -rf "$WORK"' EXIT
 KVER="$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)"
 echo ">>> Building amd-isp4-capture kmod for kernel ${KVER} (${ARCH})"
 
+# Ensure modules.dep exists for KVER so kernel scriptlets / dracut during dnf install do not fail
+depmod -a "${KVER}" || true
+
 # Build prerequisites. The shared build toolchain was already removed by the common
 # module list (this script runs after the from-file include), so install what
 # akmodsbuild/rpmbuild needs here, then clean up at the end.
@@ -88,6 +91,9 @@ fi
 KMOD_RPM="$(ls "$WORK"/out/kmod-amd-isp4-capture-*.rpm | head -1)"
 echo ">>> Installing ${KMOD_RPM} (rpm --nodeps, skipping the akmod meta-dep)"
 rpm -i --nodeps "$KMOD_RPM"
+
+echo ">>> Regenerating module dependencies for kernel ${KVER}..."
+depmod -a "${KVER}"
 
 # Clean up ONLY the packages this script actually added (never base-image deps),
 # and disable cascade/orphan removal (clean_requirements_on_remove=False) so a
