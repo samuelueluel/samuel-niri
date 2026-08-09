@@ -69,6 +69,12 @@ modules:
   # tuned and tuned-ppd (replaces power-profiles-daemon) for the 
   # accelerator-performance profile which boosts prompt processing by 5-8%.
   # ryzenadj (via COPR shdwchn10/ryzenadj) for thermal cap & sustained PPT tuning.
+  # NOTE: dkms (pulled via ryzen_smu) requires kernel-devel-matched; Terra's
+  # kernel-p03 7.2.0-52.rc6 provides a newer match and would drag in the whole
+  # Terra kernel, whose %posttrans dracut run fails (modules.dep missing) and
+  # aborts the build. Excluding kernel-p03* keeps kernel-devel-matched resolving
+  # to the vanilla COPR package. ryzenadj works via /dev/cpu/0/msr; the ryzen_smu
+  # DKMS module never builds in the image and is not required.
   - type: dnf
     repos:
       copr:
@@ -78,6 +84,8 @@ modules:
         - power-profiles-daemon
     install:
       install-weak-deps: false
+      exclude:
+        - kernel-p03*
       packages:
         - tuned
         - tuned-ppd
