@@ -110,7 +110,7 @@ modules:
       copr:
         - "@kernel-vanilla/stable"
     replace:
-      - from-repo: coprdep:copr.fedorainfracloud.org:group_kernel-vanilla:fedora
+      - from-repo: copr:copr.fedorainfracloud.org:group_kernel-vanilla:stable
         packages:
           - kernel
           - kernel-core
