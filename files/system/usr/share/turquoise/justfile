@@ -574,6 +574,28 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply the auto-MinerU patch (idempotent).
+    # Slots MinerU (magic-pdf) in BEFORE embedding: every item being (re)embedded
+    # that has a PDF and no cached sidecar gets parsed, the sidecar markdown
+    # becomes the embedded fulltext, and answer-time fulltext reads prefer the
+    # sidecar. Marker comment: [mineru patch]. See General-Tooling §3.2.5.
+    echo -e "\033[36m  Re-applying zotero-mcp auto-MinerU patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZMPATCH=/usr/share/turquoise/zotero-mcp-mineru-patch.py
+    [[ -f "$ZMPATCH" ]] || ZMPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-mineru-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping mineru patch.\033[0m"
+    elif [[ ! -f "$ZMPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-mineru-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZMPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mMinerU patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: mineru patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mMinerU patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
