@@ -49,7 +49,13 @@ ADDED_PKGS=()
 for p in "${BUILD_PKGS[@]}"; do
   rpm -q "$p" >/dev/null 2>&1 || ADDED_PKGS+=("$p")
 done
-dnf install -y --setopt=install_weak_deps=False "${BUILD_PKGS[@]}"
+# Install build prereqs. akmods pulls dkms, which requires kernel-devel-matched;
+# Terra's kernel-p03 (7.2.0-rc*) satisfies that with a higher version than the
+# vanilla COPR and drags in the whole Terra kernel, whose %posttrans dracut run
+# fails (modules.dep missing) and aborts the build. Exclude it so
+# kernel-devel-matched resolves to the vanilla devel matching KVER.
+# (Same trap as the ryzenadj block in the halo recipe — see 6b484b5.)
+dnf install -y --setopt=install_weak_deps=False --exclude='kernel-p03*' "${BUILD_PKGS[@]}"
 
 # COPR repo, download-only: we deliberately do NOT install the akmod package
 # (its root %post is what fails). The kernel-vanilla COPR (added by the common
