@@ -11,8 +11,10 @@
 #      path never runs either. The module must be built now and shipped as a kmod.
 # So: build the kmod here as the non-root 'akmods' user, then install the result.
 #
-# REMOVE this script + its recipe entry when kernel 7.2 mainlines amd_isp4_capture
-# (ships in-tree; blob in linux-firmware). See hardware note section 3.F.
+# REMOVE this script + its recipe entry when kernel-vanilla ships amd_isp4_capture
+# in-tree (driver mainlined upstream ~7.2; Fedora's config enabled it already in
+# 7.1.6+, but kernel-vanilla builds still lack it — check the kernel-modules
+# filelists before removing).
 set -euo pipefail
 
 COPR="abn/amd-isp4-capture-kmod"

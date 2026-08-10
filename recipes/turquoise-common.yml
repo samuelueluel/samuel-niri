@@ -100,17 +100,23 @@ modules:
     repos:
       nonfree: rpmfusion
 
-  # ── Stable kernel (kernel-vanilla/stable) ────────────────────────────────
-  # Replaces the UBlue base kernel with latest upstream stable release.
+  # ── Stable kernel (kernel-vanilla, latest upstream stable) ────────────────
+  # Replaces the UBlue base kernel with the latest kernel.org stable release,
+  # keeping this image ahead of Fedora's stock kernel. The actual vanilla
+  # builds live in the @kernel-vanilla/fedora repo (a coprdep of the stable
+  # project); @kernel-vanilla/stable itself publishes no fc44 packages.
   # Uses replace (distro-sync) so the COPR version wins even if base image
   # already has the same or older version installed.
+  # NOTE: Terra's kernel-p03 (7.2.0-rc*) is excluded downstream (see halo
+  # recipe) so kernel-devel-matched resolves to the vanilla devel, not Terra's
+  # higher-versioned rc kernel whose %posttrans dracut run fails.
   # Secure Boot validation must be disabled in BIOS (verified disabled).
   - type: dnf
     repos:
       copr:
         - "@kernel-vanilla/stable"
     replace:
-      - from-repo: copr:copr.fedorainfracloud.org:group_kernel-vanilla:stable
+      - from-repo: coprdep:copr.fedorainfracloud.org:group_kernel-vanilla:fedora
         packages:
           - kernel
           - kernel-core
