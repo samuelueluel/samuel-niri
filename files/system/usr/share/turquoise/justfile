@@ -491,15 +491,34 @@ update:
         latest_tag=$(curl -s --connect-timeout 5 https://api.github.com/repos/Epistates/turbovault/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
         current_ver=$(turbovault --version 2>/dev/null | awk '{print $2}' || true)
         if [[ -n "$latest_tag" && "v${current_ver}" != "$latest_tag" && "$current_ver" != "$latest_tag" ]]; then
-            echo -e "\033[33m  Updating TurboVault from ${current_ver:-unknown} to ${latest_tag}...\033[0m"
-            tar_url="https://github.com/Epistates/turbovault/releases/download/${latest_tag}/turbovault-x86_64-unknown-linux-gnu.tar.gz"
-            tmp_tar="/tmp/turbovault-latest.tar.gz"
-            if curl -fL -o "$tmp_tar" "$tar_url"; then
-                tar -xzf "$tmp_tar" -C "$HOME/.local/bin" turbovault-x86_64-unknown-linux-gnu
-                mv -f "$HOME/.local/bin/turbovault-x86_64-unknown-linux-gnu" "$HOME/.local/bin/turbovault"
-                chmod +x "$HOME/.local/bin/turbovault"
-                rm -f "$tmp_tar"
-                echo -e "\033[32m  Host turbovault updated to ${latest_tag}.\033[0m"
+            # Container-build with the sql feature: the official release tarball ships WITHOUT
+            # sql (no query_frontmatter_sql / inspect_frontmatter). Mirrors the turbovault-http
+            # build below (same rust:1.90-bookworm container + tv-fix-tool-schemas patch).
+            echo -e "\033[33m  Rebuilding TurboVault (sql) from ${current_ver:-unknown} to ${latest_tag}...\033[0m"
+            SRC_TV="$HOME/.local/src/turbovault"
+            if [[ -d "$SRC_TV/.git" ]]; then
+                git -C "$SRC_TV" fetch --tags --quiet
+                if git -C "$SRC_TV" checkout --quiet "$latest_tag" 2>/dev/null; then
+                    if bash "$HOME/.local/bin/tv-fix-tool-schemas" "$SRC_TV"; then
+                        if podman run --rm \
+                            -v "$SRC_TV":/src:z \
+                            -v tv-cargo-cache:/usr/local/cargo \
+                            -w /src \
+                            rust:1.90-bookworm \
+                            bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq cmake libssl-dev pkg-config build-essential >/dev/null 2>&1; cargo build --release --features sql'; then
+                            install -m755 "$SRC_TV/target/release/turbovault" "$HOME/.local/bin/turbovault"
+                            echo -e "\033[32m  Host turbovault rebuilt (sql) to ${latest_tag}.\033[0m"
+                        else
+                            echo -e "\033[31m  Build failed; keeping previous turbovault.\033[0m"
+                        fi
+                    else
+                        echo -e "\033[33m  Schema patch could not be applied; skipping rebuild to avoid shipping an unpatched binary.\033[0m"
+                    fi
+                else
+                    echo -e "\033[33m  Checkout of ${latest_tag} failed, skipping.\033[0m"
+                fi
+            else
+                echo -e "\033[33m  Skipping: no checkout at ~/.local/src/turbovault (clone: git clone https://github.com/Epistates/turbovault ~/.local/src/turbovault)\033[0m"
             fi
         else
             echo -e "  TurboVault is up to date (${current_ver:-1.6.0})."
@@ -522,7 +541,7 @@ update:
                             -v tv-cargo-cache:/usr/local/cargo \
                             -w /src \
                             rust:1.90-bookworm \
-                            bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq cmake libssl-dev pkg-config build-essential >/dev/null 2>&1; cargo build --release --features http'; then
+                            bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq cmake libssl-dev pkg-config build-essential >/dev/null 2>&1; cargo build --release --features http,sql'; then
                             install -m755 "$SRC_TV/target/release/turbovault" "$HOME/.local/bin/turbovault-http"
                             systemctl --user restart turbovault-web-ro turbovault-web-full 2>/dev/null || true
                             echo -e "\033[32m  turbovault-http rebuilt to ${latest_tag}.\033[0m"
@@ -593,6 +612,72 @@ update:
             already) echo -e "  Already patched." ;;
             mismatch*) echo -e "  \033[33mWARNING: mineru patch pattern changed upstream; not applied — review manually.\033[0m" ;;
             *) echo -e "  \033[33mMinerU patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the HTTP reranker patch (idempotent).
+    # Adds HttpCrossEncoderReranker to semantic_search.py: reranking delegates to
+    # the local llama.cpp /v1/rerank endpoint (ramalama 'reranker' container, port
+    # 8083, bge-reranker-v2-m3 Q8_0, started with serve-reranker) instead of
+    # CPU-bound in-process sentence-transformers. Marker: [http reranker patch].
+    echo -e "\033[36m  Re-applying zotero-mcp HTTP reranker patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZRPATCH=/usr/share/turquoise/zotero-mcp-reranker-patch.py
+    [[ -f "$ZRPATCH" ]] || ZRPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-reranker-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping reranker patch.\033[0m"
+    elif [[ ! -f "$ZRPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-reranker-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZRPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mHTTP reranker patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: reranker patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mReranker patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the collection-scoped semantic search patch (idempotent).
+    # Adds a `collection` param to zotero_semantic_search: chunk metadata stores each
+    # item's collection keys and the search filters DB-side (ChromaDB where clause,
+    # subcollections included). Backfill is metadata-only (no re-embed). Marker:
+    # [scoped patch]. See Zotero-MCP.md and New-RAG-Setup.md.
+    echo -e "\033[36m  Re-applying zotero-mcp collection-scoped search patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZSPATCH=/usr/share/turquoise/zotero-mcp-scoped-patch.py
+    [[ -f "$ZSPATCH" ]] || ZSPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-scoped-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping scoped patch.\033[0m"
+    elif [[ ! -f "$ZSPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-scoped-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZSPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mCollection-scoped search patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: scoped patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mScoped patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the hybrid search (BM25 + RRF) patch (idempotent).
+    # Adds the sparse leg: Okapi BM25 index over the same ChromaDB chunks, fused
+    # with the dense ranking via Reciprocal Rank Fusion (k=60) before the
+    # cross-encoder reranker. Rebuilt automatically on each update-db. Marker:
+    # [sparse patch]. See Zotero-MCP.md and New-RAG-Setup.md.
+    echo -e "\033[36m  Re-applying zotero-mcp hybrid search patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZHPATCH=/usr/share/turquoise/zotero-mcp-sparse-patch.py
+    [[ -f "$ZHPATCH" ]] || ZHPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-sparse-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping hybrid patch.\033[0m"
+    elif [[ ! -f "$ZHPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-sparse-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZHPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mHybrid search patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: hybrid patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mHybrid patch failed; review manually.\033[0m" ;;
         esac
     fi
 
