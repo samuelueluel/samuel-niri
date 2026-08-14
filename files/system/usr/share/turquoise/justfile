@@ -573,7 +573,13 @@ update:
     # attachments. Marker comment: [local patch]. See General-Tooling §3.2.3.
     if command -v uv >/dev/null; then
         echo -e "\033[36m  Upgrading zotero-mcp-server...\033[0m"
-        uv tool upgrade 'zotero-mcp-server[semantic]' 2>/dev/null || true   # [semantic] keeps chromadb+sentence-transformers (zotero semantic search)
+        # Extras are [semantic,pdf] since 2026-08-12: [semantic] keeps chromadb+sentence-transformers (zotero semantic search);
+        # [pdf] installs PyMuPDF -> get_pdf_outline / get_page_layout / create_annotation go live.
+        # KEEP THE EXTRAS LIST IN SYNC with the "Tools that do NOT work" table in
+        # ~/.agents/skills/zotero/references/library-ops.md — that table is install-specific,
+        # so any change here (or installing Better BibTeX) must update it in the same change,
+        # or docs will tell agents a working tool is dead.
+        uv tool upgrade 'zotero-mcp-server[semantic,pdf]' 2>/dev/null || true
     fi
 
     echo -e "\033[36m  Re-applying zotero-mcp linked-file fulltext patch...\033[0m"
@@ -678,6 +684,51 @@ update:
             already) echo -e "  Already patched." ;;
             mismatch*) echo -e "  \033[33mWARNING: hybrid patch pattern changed upstream; not applied — review manually.\033[0m" ;;
             *) echo -e "  \033[33mHybrid patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the Qwen3-Embedding query-instruct patch (idempotent).
+    # Prepends `Instruct: <task>\nQuery: <query>` on the QUERY side only in
+    # OpenAIEmbeddingFunction.embed_query (documents stay raw via __call__);
+    # Qwen3-Embedding official guidance: omitting it costs ~1-5% retrieval.
+    # Marker: [instruct patch]. See Zotero-MCP.md.
+    echo -e "\033[36m  Re-applying zotero-mcp query-instruct patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZIPATCH=/usr/share/turquoise/zotero-mcp-instruct-patch.py
+    [[ -f "$ZIPATCH" ]] || ZIPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-instruct-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping instruct patch.\033[0m"
+    elif [[ ! -f "$ZIPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-instruct-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZIPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mInstruct patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: instruct patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mInstruct patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the PDF-outline child-script patch (idempotent).
+    # zotero_get_pdf_outline extracts the TOC in a throwaway child whose stdout must
+    # be pure JSON; PyMuPDF>=1.26 prints a deprecation warning to STDOUT when importing
+    # the legacy `fitz` name, corrupting it ("unreadable outline data"). The patch makes
+    # the child import `pymupdf as fitz` instead (warning-free, API-identical).
+    # Marker: [toc patch]. This patch file itself lives in the turquoise repo like the others.
+    echo -e "\033[36m  Re-applying zotero-mcp PDF-outline child-script patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZTPATCH=/usr/share/turquoise/zotero-mcp-toc-patch.py
+    [[ -f "$ZTPATCH" ]] || ZTPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-toc-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping toc patch.\033[0m"
+    elif [[ ! -f "$ZTPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-toc-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZTPATCH" "$ZMPKG/tools/write.py" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mTOC patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: toc patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mTOC patch failed; review manually.\033[0m" ;;
         esac
     fi
 

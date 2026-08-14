@@ -115,6 +115,8 @@ def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
     out_dir = work / "out"
     log_path = work / "run.log"
     env = dict(os.environ)
+    env["VIRTUAL_VRAM_SIZE"] = "4"  # limit batch_ratio to 1 (batch_size 16) to prevent GTT ballooning
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if cfg.get("config_json"):
         env["MINERU_TOOLS_CONFIG_JSON"] = str(cfg["config_json"])
     cmd = [str(bin_), "-p", str(pdf_path), "-o", str(out_dir), "-m", "txt"]
