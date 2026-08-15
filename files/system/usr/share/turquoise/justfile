@@ -732,6 +732,29 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply the Deterministic Contextual Retrieval patch (idempotent).
+    # Prepends a lean structural prefix ([Paper: <title> | Section: <breadcrumb>])
+    # to every chunk IN MEMORY before embedding/BM25 indexing, so regression
+    # models and proofs keep their paper/section identity in both indexes.
+    # Zero disk mutation of sidecars; sparse leg inherits via iter_documents().
+    # Marker: [contextual patch]. See New-RAG-Setup.md (Extension 1: DCR).
+    echo -e "\033[36m  Re-applying zotero-mcp Deterministic Contextual Retrieval patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZCPATCH=/usr/share/turquoise/zotero-mcp-contextual-patch.py
+    [[ -f "$ZCPATCH" ]] || ZCPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-contextual-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping contextual patch.\033[0m"
+    elif [[ ! -f "$ZCPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-contextual-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZCPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mContextual patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: contextual patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mContextual patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
