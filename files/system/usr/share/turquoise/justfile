@@ -818,10 +818,10 @@ update:
 
         podman restart lemonade || true
         sleep 3
-        if podman exec lemonade grep -q DeepSeek /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server 2>/dev/null; then
-            echo -e "\033[32m  Dispatch wrapper verified (DeepSeek -> Vulkan routing intact).\033[0m"
+        if podman exec lemonade grep -q "force-rocm" /opt/lemonade/llama/llama-server 2>/dev/null; then
+            echo -e "\033[32m  Dispatch wrapper verified (Dual-engine ROCm/Vulkan routing intact).\033[0m"
         else
-            echo -e "\033[31m  WARNING: dispatch wrapper missing DeepSeek patterns — DeepSeek models will misroute to ROCm!\033[0m"
+            echo -e "\033[31m  WARNING: dispatch wrapper missing force-rocm patterns — verify routing!\033[0m"
         fi
     fi
 

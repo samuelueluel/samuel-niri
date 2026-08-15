@@ -20,7 +20,7 @@ done
 
 if [[ $USE_ROCM -eq 1 ]]; then
   # Gaëtan Puleo ROCm 7.14 HIP engine
-  export LD_LIBRARY_PATH="/opt/lemonade/llama/rocm:/opt/lemonade/llama/rocm/rocm/lib:/opt/lemonade/llama/rocm/rocm/llvm/lib"
+  export LD_LIBRARY_PATH="/opt/lemonade/llama/rocm:/opt/lemonade/llama/rocm/rocm/lib:/opt/lemonade/llama/rocm/rocm/lib/llvm/lib"
   exec /opt/lemonade/llama/rocm/llama-server "${CLEAN_CMD[@]}"
 else
   # Nathanw1014 Vulkan RADV engine (strix-halo-vulkan)
