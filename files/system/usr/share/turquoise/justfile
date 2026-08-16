@@ -483,7 +483,7 @@ update:
     echo -e "\n\033[34m=== Updating MCP Servers ===\033[0m"
     if command -v uv >/dev/null; then
         echo -e "\033[36m  Upgrading mcp-stata...\033[0m"
-        uv tool upgrade mcp-stata 2>/dev/null || true
+        uv tool install --with "mcp<2" mcp-stata --upgrade 2>/dev/null || true
     fi
 
     if command -v turbovault >/dev/null; then
