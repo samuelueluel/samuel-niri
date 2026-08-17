@@ -796,6 +796,27 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply the Bounded AST Chunker patch (idempotent).
+    # Replaces naive character slicing with AST-aware Markdown chunking:
+    # keeps tables, LaTeX display math, and figure schemas atomic up to 3,800 chars.
+    # Marker: [ast chunker patch]. See Dynamic-AST-Chunker.md and Zotero-MCP.md.
+    echo -e "\033[36m  Re-applying zotero-mcp Bounded AST Chunker patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZAPATCH=/usr/share/turquoise/zotero-mcp-ast-chunker-patch.py
+    [[ -f "$ZAPATCH" ]] || ZAPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-ast-chunker-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping ast chunker patch.\033[0m"
+    elif [[ ! -f "$ZAPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-ast-chunker-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZAPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mBounded AST Chunker patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: ast chunker patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mAST chunker patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
