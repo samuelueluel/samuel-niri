@@ -4,4 +4,4 @@
 # This udev rule disables the wakeup capability of the atkbd driver for board 8D01.
 # See: https://github.com/projectbluefin/bluefin/issues/383
 
-ACTION=="add", SUBSYSTEM=="serio", DRIVERS=="atkbd", ATTRS{board_vendor}=="HP", ATTRS{board_name}=="8D01", ATTR{power/wakeup}="disabled"
+ACTION=="add", SUBSYSTEM=="serio", DRIVERS=="atkbd", ATTR{power/wakeup}="disabled"

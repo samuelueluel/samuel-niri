@@ -1022,7 +1022,11 @@ halo-verify:
     fi
 
     echo -e "\033[34mWebcam — AMD ISP4 kmod (built at image time)\033[0m"
-    lsmod | grep -q amd_isp4_capture && pass "amd_isp4_capture loaded" || warn "amd_isp4_capture not loaded"
+    if [[ -d /sys/module/amd_isp4_capture ]] || (command -v lsmod >/dev/null && lsmod | grep -q amd_isp4_capture); then
+        pass "amd_isp4_capture loaded"
+    else
+        warn "amd_isp4_capture not loaded"
+    fi
     if command -v v4l2-ctl >/dev/null; then
         v4l2-ctl --list-devices 2>/dev/null | grep -qi isp && pass "ISP4 video device present" \
             || warn "no ISP4 device in v4l2-ctl --list-devices"
