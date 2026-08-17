@@ -1008,14 +1008,9 @@ halo-verify:
 
     echo -e "\033[34mKernel arguments (baked via kargs module)\033[0m"
     KARGS="$(rpm-ostree kargs 2>/dev/null || true)"
-    for arg in amd_pstate=active ttm.pages_limit=32505856; do
+    for arg in amd_pstate=active ttm.pages_limit=32505856 amd_iommu=off; do
         grep -q -- "$arg" <<<"$KARGS" && pass "$arg" || fail "$arg MISSING"
     done
-    if grep -q -- 'amd_iommu=off' <<<"$KARGS"; then
-        warn "amd_iommu=off present → XDNA2 NPU DISABLED (iGPU max-speed mode). 'sjust halo-npu on' to re-enable."
-    else
-        pass "amd_iommu=off absent → NPU enabled (autocomplete/embeddings available)"
-    fi
     grep -q 'compress=zstd' <<<"$KARGS" && pass "compress=zstd in kargs" \
         || warn "compress=zstd not in kargs — run 'sjust fix-compression' + reboot"
 
@@ -1085,34 +1080,6 @@ halo-verify:
     command -v amd-s2idle >/dev/null && pass "amd-s2idle available — run 'sudo amd-s2idle test' to validate s2idle" \
         || warn "amd-s2idle not installed — run 'sjust halo' or 'pipx install amd-debug-tools'"
 
-# Toggle the XDNA2 NPU on/off via the amd_iommu kernel arg, then reboot (turquoise-halo only)
-halo-npu mode:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{mode}}" in
-      on)
-        if rpm-ostree kargs | grep -q -- 'amd_iommu=off'; then
-            sudo rpm-ostree kargs --delete='amd_iommu=off'
-            echo -e "\033[32mNPU enabled\033[0m (amd_iommu=off removed). Reboot to apply."
-        else
-            echo "NPU already enabled (amd_iommu=off not set)."
-        fi
-        ;;
-      off)
-        if rpm-ostree kargs | grep -q -- 'amd_iommu=off'; then
-            echo "NPU already disabled (amd_iommu=off set)."
-        else
-            sudo rpm-ostree kargs --append='amd_iommu=off'
-            echo -e "\033[32miGPU max-speed mode\033[0m (amd_iommu=off added, ~5–12% LLM boost; NPU disabled). Reboot to apply."
-        fi
-        ;;
-      *)
-        echo "usage: sjust halo-npu on|off"
-        echo "  on  = NPU enabled (autocomplete/embeddings) — default"
-        echo "  off = max iGPU LLM speed, NPU disabled"
-        exit 1
-        ;;
-    esac
 
 # Set up the local NPU LLM stack inside an Ubuntu distrobox: XRT + FastFlowLM (NPU backend) +
 # Lemonade (orchestrator on :13305), memlock fix, user service (turquoise-halo only).
