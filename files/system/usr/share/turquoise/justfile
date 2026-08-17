@@ -210,6 +210,21 @@ pipx:
         fi
     done < "$PIPX_FILE"
 
+# Declaratively install/upgrade Python-based CLI and MCP tools from ~/.Uvfile
+# Uvfile format: <pkg>[extras] [--with <dep>] [--from <git-url>]  # optional comment
+uv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    UV_FILE="{{HOME}}/.Uvfile"
+    [[ -f "$UV_FILE" ]] || { echo "~/.Uvfile not found, skipping."; exit 0; }
+    echo "Syncing uv tools from $UV_FILE..."
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        entry=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*#.*//' -e 's/[[:space:]]*$//')
+        [[ -z "$entry" ]] && continue
+        echo "  Installing/Upgrading: $entry..."
+        eval "uv tool install $entry --upgrade 2>/dev/null || true"
+    done < "$UV_FILE"
+
 # Add Flathub, install flatpaks, apply permission overrides
 flatpaks:
     #!/usr/bin/env bash
@@ -752,6 +767,32 @@ update:
             already) echo -e "  Already patched." ;;
             mismatch*) echo -e "  \033[33mWARNING: contextual patch pattern changed upstream; not applied — review manually.\033[0m" ;;
             *) echo -e "  \033[33mContextual patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the retrieval-hygiene filters patch (idempotent).
+    # Four components, zero re-embed (BM25 rebuilds in ~2s; dense untouched):
+    #  1. reference-chunk classifier (DCR breadcrumb + author-year density)
+    #  2. exclude reference chunks from the BM25 leg (lexical noise killer;
+    #     dense keeps them so citation queries still work)
+    #  3. optional rerank-score floor (semantic_search.hybrid.rerank_floor)
+    #  4. figure queries: inject [Figure Schema] chunks via a "Figure Schema"
+    #     BM25 probe + boost their rerank score (semantic_search.hybrid.figure_boost)
+    # Marker: [hybrid filter patch]. See Zotero-MCP.md and New-RAG-Setup.md.
+    echo -e "\033[36m  Re-applying zotero-mcp retrieval-hygiene filters patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZFPATCH=/usr/share/turquoise/zotero-mcp-hybrid-filter-patch.py
+    [[ -f "$ZFPATCH" ]] || ZFPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-hybrid-filter-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping hybrid-filter patch.\033[0m"
+    elif [[ ! -f "$ZFPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-hybrid-filter-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mRetrieval-hygiene filters patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: hybrid-filter patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mHybrid-filter patch failed; review manually.\033[0m" ;;
         esac
     fi
 
