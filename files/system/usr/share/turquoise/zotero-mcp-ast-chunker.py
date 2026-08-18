@@ -242,7 +242,12 @@ def bounded_ast_split_passages(
 
         start_idx = curr_blocks[0].start
         end_idx = curr_blocks[-1].end
-        chunk_str = text[start_idx:end_idx].strip()
+        # [ast chunker fix] join the ACTUAL block texts instead of slicing the raw
+        # document range: a block split via Rule 2/3/4 between the first and last
+        # accumulated block would otherwise be duplicated into the flush chunk
+        # (47/101 items affected; see 02_Memories/Chunking-Bug.md). Keeps chunk
+        # text == the concatenation of the blocks it claims to contain.
+        chunk_str = "\n".join(b.text.strip() for b in curr_blocks).strip()
 
         if chunk_str:
             passages.append((chunk_str, start_idx, end_idx))

@@ -11,12 +11,15 @@ Markdown Chunker:
 - Sibling paragraph packing (min 600 chars) eliminates vector starvation.
 - Prose token ceiling (2,400 chars) maintains dense vector sharpness.
 - Row-wise table splitting with duplicate header preservation handles giant tables.
-- Sets DEFAULT_REQUEST_BATCH_SIZE to 4 to prevent HTTP 400 context overflows on llama-server.
+- Sets DEFAULT_REQUEST_BATCH_SIZE to 16 for GPU-saturating batch embedding. Empirically verified
+  (2026-08-17): llama-server embeds per-input sequences, so request total tokens are NOT bounded by
+  ctx (8 x 3,402-tok inputs at ctx 4096 = OK); batching 8 inputs took 5.8s vs 5.1s for 1. The old
+  batch=1 was a band-aid for a historical concatenating build. See 02_Memories/Embedding-Optimization.md.
 
 Files:
 - ast_chunker.py     copied from zotero-mcp-ast-chunker.py next to this script
 - semantic_search.py split_into_passages delegates to bounded_ast_split_passages
-- chroma_client.py   DEFAULT_REQUEST_BATCH_SIZE = 4
+- chroma_client.py   DEFAULT_REQUEST_BATCH_SIZE = 16
 
 Marker comment: "[ast chunker patch]". Re-applied by sjust update.
 Usage: zotero-mcp-ast-chunker-patch.py <path/to/zotero_mcp-package-dir>
@@ -88,6 +91,20 @@ from . import ast_chunker as _ast_chunker  # {MARKER}"""
 '''
             ss_text = ss_text[:pos1] + ast_func_replacement + ss_text[pos2:]
             changed = True
+
+        # 2c. [batch size patch] shrink the update-db item batch so each
+        # ChromaDB upsert write stays small. batch=25 meant a single ~14K-chunk
+        # write for the first textbooks batch, which wedged mid-write (stalled
+        # at 5,461 vectors on 2026-08-17, both runs). batch=2 caps writes at
+        # ~4.6K chunks (under the proven ceiling) and makes progress durable
+        # in small increments. See 02_Memories/Embedding-Optimization.md.
+        if "batch_size = 25" in ss_text and "[batch size patch]" not in ss_text:
+            ss_text = ss_text.replace(
+                "batch_size = 25",
+                "batch_size = 2  # [batch size patch] 2026-08-17: batch-25 upserts (~14K chunks) wedge ChromaDB mid-write; small batches commit safely",
+                1,
+            )
+            changed = True
         else:
             errors.append("could not locate split_into_passages boundaries in semantic_search.py")
     else:
@@ -96,16 +113,29 @@ from . import ast_chunker as _ast_chunker  # {MARKER}"""
     if changed and not errors:
         target_ss.write_text(ss_text, encoding="utf-8")
 
-# 3. Patch chroma_client.py DEFAULT_REQUEST_BATCH_SIZE = 1
+# 3. Patch chroma_client.py DEFAULT_REQUEST_BATCH_SIZE = 16 (batch embedding; see header)
 target_cc = pkg / "chroma_client.py"
 if target_cc.exists():
     cc_text = target_cc.read_text(encoding="utf-8")
     if "DEFAULT_REQUEST_BATCH_SIZE = 64" in cc_text:
-        cc_text = cc_text.replace("DEFAULT_REQUEST_BATCH_SIZE = 64", "DEFAULT_REQUEST_BATCH_SIZE = 1  # [ast chunker patch]", 1)
+        cc_text = cc_text.replace("DEFAULT_REQUEST_BATCH_SIZE = 64", "DEFAULT_REQUEST_BATCH_SIZE = 16  # [ast chunker patch]", 1)
         target_cc.write_text(cc_text, encoding="utf-8")
         changed = True
     elif "DEFAULT_REQUEST_BATCH_SIZE = 4" in cc_text:
-        cc_text = cc_text.replace("DEFAULT_REQUEST_BATCH_SIZE = 4", "DEFAULT_REQUEST_BATCH_SIZE = 1  # [ast chunker patch]", 1)
+        cc_text = cc_text.replace("DEFAULT_REQUEST_BATCH_SIZE = 4", "DEFAULT_REQUEST_BATCH_SIZE = 16  # [ast chunker patch]", 1)
+        target_cc.write_text(cc_text, encoding="utf-8")
+        changed = True
+
+    # [batch size patch] cap the upsert write sub-batch at 512: ChromaDB's
+    # native max (~5461) wedges mid-write at scale (2.3K-chunk writes hung with
+    # no error on 2026-08-17; <=133 always succeeded). Small writes are durable
+    # and incremental. See 02_Memories/Embedding-Optimization.md.
+    if "max_batch = int(self.client.get_max_batch_size())" in cc_text and "[batch size patch]" not in cc_text.split("def upsert_documents")[1][:4000]:
+        cc_text = cc_text.replace(
+            "max_batch = int(self.client.get_max_batch_size())",
+            "max_batch = min(int(self.client.get_max_batch_size()), 512)  # [batch size patch] cap write sub-batch at 512 (large writes wedge)",
+            1,
+        )
         target_cc.write_text(cc_text, encoding="utf-8")
         changed = True
 
@@ -128,9 +158,14 @@ if target_chroma_ef.exists():
         # Extract embeddings from response
         return [np.array(data.embedding, dtype=np.float32) for data in response.data]'''
 
-    new_ef_call = '''        # [ast chunker patch] Sub-batch requests to avoid llama-server context limit
+    new_ef_call = '''        # [ast chunker patch] Batch embedding + timeout. llama-server embeds
+        # per-input sequences (verified 2026-08-17: 8 x 3.4K-tok inputs OK at
+        # ctx 4096; 8 inputs 5.8s vs 1 in 5.1s). batch=16 saturates the GPU;
+        # the old hardcoded batch_size=1 sent one HTTP request per chunk with
+        # NO timeout - a single wedged request hung the whole batch forever.
+        # See 02_Memories/Embedding-Optimization.md.
         embeddings = []
-        batch_size = 1
+        batch_size = 16
         for i in range(0, len(input), batch_size):
             sub_input = input[i:i + batch_size]
             embedding_params: Dict[str, Any] = {
@@ -139,7 +174,12 @@ if target_chroma_ef.exists():
             }
             if self.dimensions is not None and "text-embedding-3" in self.model_name:
                 embedding_params["dimensions"] = self.dimensions
-            response = self.client.embeddings.create(**embedding_params)
+            try:
+                response = self.client.embeddings.create(**embedding_params, timeout=120)
+            except Exception as e:
+                raise RuntimeError(
+                    f"embedding request failed (batch {i // batch_size}, {len(sub_input)} inputs): {e}"
+                ) from e
             embeddings.extend([np.array(data.embedding, dtype=np.float32) for data in response.data])
 
         return embeddings'''

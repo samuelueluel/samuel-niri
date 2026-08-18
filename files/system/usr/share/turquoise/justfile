@@ -817,6 +817,34 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply the date-filter patch (idempotent).
+    # advanced_search date range ops (isAfter/isBefore/isGreaterThan/isLessThan)
+    # fell back to raw Python string comparison whenever float() could not parse
+    # BOTH sides — and Zotero's month-first display dates ("5/2018", "08/2024")
+    # never parse as floats. On a library where ~46% of dated items are
+    # month-first, every date-range query mis-ordered them in BOTH directions
+    # (isAfter "2020" returned papers from 1981, excluded a real 2024 paper),
+    # and no-date items vacuously matched isBefore. The patch adds a date-aware
+    # comparison layer to tools/search.py (_parse_date + _compare date branch)
+    # and fixes the `year` field extractor (date[:4] turned "5/2018" into
+    # "5/20"). Marker: [date patch]. See Zotero-MCP.md (Date filters).
+    echo -e "\033[36m  Re-applying zotero-mcp date-filter patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZDPATCH=/usr/share/turquoise/zotero-mcp-date-patch.py
+    [[ -f "$ZDPATCH" ]] || ZDPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-date-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping date patch.\033[0m"
+    elif [[ ! -f "$ZDPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-date-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZDPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mDate-filter patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: date patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mDate patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
