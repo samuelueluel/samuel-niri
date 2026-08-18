@@ -867,7 +867,7 @@ update:
             echo "Building Vulkan (Nathanw1014)..."
             export CC=gcc
             export CXX=g++
-            git clone -b strix-halo-vulkan --depth=1 https://github.com/Nathanw1014/llama.cpp.git /tmp/vulkan-src
+            git clone -b strix-halo-vulkan --depth=1 https://github.com/samuelueluel/strix-halo-llamacpp-nudge.git /tmp/vulkan-src
             cd /tmp/vulkan-src
             cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
             cmake --build build --config Release -j$(nproc)

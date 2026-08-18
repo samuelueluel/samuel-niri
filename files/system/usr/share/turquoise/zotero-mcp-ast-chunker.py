@@ -31,8 +31,15 @@ DISPLAY_MATH_PATTERN = re.compile(r"\$\$[\s\S]*?\$\$")
 FIGURE_SCHEMA_PATTERN = re.compile(r"\[Figure Schema\][\s\S]*?(?=\n\n|\Z)")
 
 
-def split_oversized_table(table_html: str, max_chars: int = DEFAULT_TARGET_CHUNK_SIZE) -> List[str]:
-    """Split an oversized HTML table row-wise (<tr>), duplicating the header row on all chunks."""
+def split_oversized_table(table_html: str, max_chars: int = DEFAULT_TARGET_CHUNK_SIZE) -> List[Tuple[str, int, int]]:
+    """Split an oversized HTML table row-wise (<tr>), duplicating the header row on all chunks.
+
+    Returns (text, rel_start, rel_end) triples so callers can store accurate
+    source spans (each piece claims only its own region, not the whole table).
+    Individual rows larger than max_chars are hard-sliced so no piece exceeds
+    max_chars + one row (table HTML is atomic per piece, so a slice may cut a
+    mid-row cell - acceptable for pathological single giant rows).
+    """
     header_match = re.search(r"<thead[\s\S]*?</thead>", table_html, re.IGNORECASE)
     if header_match:
         header_html = header_match.group(0)
@@ -42,12 +49,17 @@ def split_oversized_table(table_html: str, max_chars: int = DEFAULT_TARGET_CHUNK
 
     rows = re.findall(r"<tr[\s\S]*?</tr>", table_html, re.IGNORECASE)
     if not rows or len(rows) <= 1:
-        return [table_html]
+        return [(table_html.strip(), 0, len(table_html))]
 
-    table_chunks = []
+    table_chunks: List[Tuple[str, int, int]] = []
     curr_rows = []
     base_wrapper_len = len("<table><tbody>" + header_html + "</tbody></table>")
     curr_len = base_wrapper_len
+    # running source offset of the current row group (relative to table_html)
+    rel_pos = table_html.find(rows[0])
+    if rel_pos < 0:
+        rel_pos = 0
+    curr_rel_start = rel_pos
 
     start_idx = 1 if (header_html and rows[0] in header_html) else 0
 
@@ -55,12 +67,22 @@ def split_oversized_table(table_html: str, max_chars: int = DEFAULT_TARGET_CHUNK
         r_len = len(r)
         if curr_len + r_len > max_chars and curr_rows:
             chunk_content = f"<table><tbody>{header_html}{''.join(curr_rows)}</tbody></table>"
-            table_chunks.append(chunk_content)
+            table_chunks.append((chunk_content, curr_rel_start, curr_rel_start + len("".join(curr_rows))))
             curr_rows = [r]
             curr_len = base_wrapper_len + r_len
+            curr_rel_start = rel_pos
         else:
             curr_rows.append(r)
             curr_len += r_len
+        rel_pos = table_html.find(r, rel_pos + 1) if rel_pos >= 0 else -1
+        if rel_pos < 0:
+            rel_pos = table_html.find(r)
+
+    if curr_rows:
+        chunk_content = f"<table><tbody>{header_html}{''.join(curr_rows)}</tbody></table>"
+        table_chunks.append((chunk_content, curr_rel_start, curr_rel_start + len("".join(curr_rows))))
+
+    return table_chunks
 
     if curr_rows:
         chunk_content = f"<table><tbody>{header_html}{''.join(curr_rows)}</tbody></table>"
@@ -282,32 +304,31 @@ def bounded_ast_split_passages(
         # Rule 2: HTML Tables
         if block.block_type == "table":
             if block.length <= max_atomic_size:
-                if curr_len + block.length > chunk_size and curr_len >= min_chunk_size:
+                if (curr_len + block.length > chunk_size and curr_len >= min_chunk_size) or curr_len + block.length > failsafe_size:
                     flush_chunk(force_overlap=False)
                 curr_blocks.append(block)
                 curr_len += block.length
                 if curr_len >= chunk_size:
                     flush_chunk(force_overlap=False)
             else:
-                if curr_len >= min_chunk_size:
+                if curr_len:
                     flush_chunk(force_overlap=False)
-                table_sub_chunks = split_oversized_table(block.text, chunk_size)
-                for t_chunk in table_sub_chunks:
+                for t_chunk, t_rel_start, t_rel_end in split_oversized_table(block.text, chunk_size):
                     if len(passages) < max_chunks:
-                        passages.append((t_chunk, block.start, block.end))
+                        passages.append((t_chunk, block.start + t_rel_start, block.start + t_rel_end))
             continue
 
         # Rule 3: Math and Figure Schemas (Display math, [Figure Schema])
         if block.is_atomic:
             if block.length <= max_atomic_size:
-                if curr_len + block.length > chunk_size and curr_len >= min_chunk_size:
+                if (curr_len + block.length > chunk_size and curr_len >= min_chunk_size) or curr_len + block.length > failsafe_size:
                     flush_chunk(force_overlap=False)
                 curr_blocks.append(block)
                 curr_len += block.length
                 if curr_len >= chunk_size:
                     flush_chunk(force_overlap=False)
             else:
-                if curr_len >= min_chunk_size:
+                if curr_len:
                     flush_chunk(force_overlap=False)
                 sub_chunks = split_prose_by_sentences(block.text, chunk_size, overlap)
                 for s_text, s_rel_start, s_rel_end in sub_chunks:
@@ -317,7 +338,7 @@ def bounded_ast_split_passages(
 
         # Rule 4: Standard Prose Block
         if block.length > chunk_size:
-            if curr_len >= min_chunk_size:
+            if curr_len:
                 flush_chunk(force_overlap=False)
             sub_chunks = split_prose_by_sentences(block.text, chunk_size, overlap)
             for s_text, s_rel_start, s_rel_end in sub_chunks:
@@ -326,7 +347,7 @@ def bounded_ast_split_passages(
             continue
 
         # Standard paragraph packing
-        if curr_len + block.length > chunk_size and curr_len >= min_chunk_size:
+        if (curr_len + block.length > chunk_size and curr_len >= min_chunk_size) or curr_len + block.length > failsafe_size:
             flush_chunk(force_overlap=True)
 
         curr_blocks.append(block)
