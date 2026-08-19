@@ -25,9 +25,11 @@ fi
 echo ">>> Cloning mt7925 repository..."
 git clone --depth 1 https://github.com/zbowling/mt7925.git "$WORK/mt7925"
 
-echo ">>> Patching for kernel 7.1+ API changes..."
+echo ">>> Patching for kernel 7.1+ & 7.2+ API changes..."
 # In kernel 7.1+, the `u` union inside `ieee80211_mgmt->u.action` became anonymous, and action_code moved to the parent action struct.
 find "$WORK/mt7925/dkms/src" -type f -name "*.c" -exec sed -i -e 's/mgmt->u\.action\.u\.addba_req\.action_code/mgmt->u.action.action_code/g' -e 's/mgmt->u\.action\.u\.addba_req\.capab/mgmt->u.action.addba_req.capab/g' {} +
+# In kernel 7.2+, IEEE80211_EML_CAP_EMLSR_* padding/transition delay constants were renamed to IEEE80211_EML_CAP_EML_*
+find "$WORK/mt7925/dkms/src" -type f -name "*.c" -exec sed -i -e 's/IEEE80211_EML_CAP_EMLSR_PADDING_DELAY/IEEE80211_EML_CAP_EML_PADDING_DELAY/g' -e 's/IEEE80211_EML_CAP_EMLSR_TRANSITION_DELAY/IEEE80211_EML_CAP_EML_TRANSITION_DELAY/g' {} +
 
 
 echo ">>> Building mt7925 modules..."
