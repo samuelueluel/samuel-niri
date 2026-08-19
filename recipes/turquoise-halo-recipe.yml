@@ -40,9 +40,11 @@ modules:
   #     - build-isp4-akmod.sh
 
   # ── Wi-Fi kmod — MT7925 & RyzenAdj ─────────────────────────────────────────
+  # In-tree mt7925e driver in kernel 7.2+ includes upstream stability fixes.
+  # Out-of-tree mt7925 kmod build disabled; install-ryzenadj kept for TuneD.
   - type: script
     scripts:
-      - build-mt7925-kmod.sh
+      # - build-mt7925-kmod.sh
       - install-ryzenadj.sh
 
   # ── sched-ext userspace schedulers (doc 7) ────────────────────────────────
