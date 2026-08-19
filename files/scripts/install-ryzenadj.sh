@@ -1,31 +1,21 @@
 #!/usr/bin/env bash
-# Install ryzenadj via rpm --nodeps from COPR shdwchn10/ryzenadj.
+# Install ryzenadj static binary from the official GitHub release.
+#
+# The shdwchn10/ryzenadj COPR stopped shipping builds (all chroot dirs empty
+# as of 2026-08-18), which silently broke the TuneD power hook (llm_tune.sh
+# -> ryzenadj --tctl-temp=92). The musl-static x86_64 release is dependency-free.
 #
 # ryzenadj requires /dev/cpu/0/msr and does not need the ryzen_smu kernel module.
-# Installing via standard dnf pulls akmod-ryzen_smu, whose root %post fails in build.
 set -euo pipefail
 
-COPR="shdwchn10/ryzenadj"
+VERSION="v0.19.0"
+URL="https://github.com/FlyGoat/ryzenadj/releases/download/${VERSION}/ryzenadj-linux-musl-static-x86_64.tar.gz"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-cat >/etc/yum.repos.d/_copr_ryzenadj.repo <<EOF
-[copr:copr.fedorainfracloud.org:shdwchn10:ryzenadj]
-name=Copr repo for ryzenadj owned by shdwchn10
-baseurl=https://download.copr.fedorainfracloud.org/results/${COPR}/fedora-\$releasever-\$basearch/
-type=rpm-md
-gpgcheck=1
-gpgkey=https://download.copr.fedorainfracloud.org/results/${COPR}/pubkey.gpg
-repo_gpgcheck=0
-enabled=1
-EOF
+echo ">>> Downloading ryzenadj ${VERSION} (musl static)..."
+curl -fsSL -o "$WORK_DIR/ryzenadj.tar.gz" "$URL"
+tar xzf "$WORK_DIR/ryzenadj.tar.gz" -C "$WORK_DIR"
+install -m 0755 "$WORK_DIR"/ryzenadj-linux-musl-static-x86_64/ryzenadj /usr/local/bin/ryzenadj
 
-echo ">>> Downloading ryzenadj RPM..."
-dnf download --destdir="$WORK_DIR" ryzenadj
-
-RYZENADJ_RPM="$(ls "$WORK_DIR"/ryzenadj-*.rpm | head -1)"
-echo ">>> Installing ${RYZENADJ_RPM} with --nodeps..."
-rpm -i --nodeps "$RYZENADJ_RPM"
-
-rm -f /etc/yum.repos.d/_copr_ryzenadj.repo
-echo ">>> Done: ryzenadj installed"
+echo ">>> Done: $(/usr/local/bin/ryzenadj -h 2>&1 | head -1 || true)"
