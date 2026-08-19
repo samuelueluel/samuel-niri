@@ -1288,7 +1288,7 @@ halo-llm-gpu:
     info() { echo -e "  \033[34m→\033[0m $*"; }
     fail() { echo -e "  \033[31m✗\033[0m $*"; }
 
-    RAMA_IMG=docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv
+    RAMA_IMG=ghcr.io/nathanw1014/strix-halo-llamacpp:vulkan
     BRAIN_MODEL=hf://unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q8_K_XL
     CODER_MODEL=hf://Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF:Q4_K_M
     EMBED_MODEL=hf://Qwen/Qwen3-Embedding-8B-GGUF:Q4_K_M
@@ -1303,7 +1303,7 @@ halo-llm-gpu:
         exit 1
     fi
 
-    # 2. kyuz0 Strix Halo toolbox (Vulkan/RADV llama.cpp) — the container ramalama serves into.
+    # 2. Nathanw1014 Strix Halo toolbox (Vulkan/RADV llama.cpp) — the container ramalama serves into.
     # RADV is the stable/fast path on RDNA 3.5; avoids ROCm instability on this APU.
     echo -e "\n\033[34m=== 2/6 Vulkan/RADV toolbox image ===\033[0m"
     if podman image exists "$RAMA_IMG"; then

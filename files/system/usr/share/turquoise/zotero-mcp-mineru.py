@@ -61,11 +61,20 @@ def load_mineru_config(config_path: str | None = None) -> dict:
         logger.debug("mineru: config read failed: %s", e)
     defaults = {
         "enabled": False,
-        "bin": str(Path.home() / "mineru-rocm-venv/bin/magic-pdf"),
-        "config_json": str(Path.home() / "magic-pdf-gpu.json"),
+        # MinerU 3.4.5 (upgrade 2026-08-19): CLI renamed magic-pdf -> mineru,
+        # pipeline backend via -b pipeline. 1.x venv kept at
+        # ~/mineru-rocm-venv (magic-pdf) as fallback.
+        "bin": str(Path.home() / "mineru-upgrade-venv/bin/mineru"),
+        "config_json": None,
         "sidecar_dir": str(Path.home() / ".config" / "zotero-mcp" / "mineru-sidecars"),
         "work_dir": str(Path.home() / ".cache" / "zotero-mcp" / "mineru-work"),
         "timeout_seconds": 3600,
+        # GTT balloon guard (MinerU 3.x env, renamed from 1.x VIRTUAL_VRAM_SIZE).
+        # Unset -> MinerU reads real GPU mem (124 GB) -> batch_ratio 16 (fastest;
+        # GTT stayed ~7 GB across dense manual windows; sidecar-watch backstops
+        # genuine balloons). Set 4 for batch_ratio 1 (conservative).
+        "virtual_vram_size": None,
+        "backend": "pipeline",
     }
     merged = dict(defaults)
     merged.update({k: v for k, v in cfg.items() if v is not None})
@@ -91,7 +100,7 @@ def read_sidecar(cfg: dict, item_key: str) -> str | None:
 
 
 def _find_output_md(out_dir: Path) -> Path | None:
-    """magic-pdf writes <out>/<stem>/txt/<stem>.md — locate it."""
+    """mineru writes <out>/<stem>/txt/<stem>.md — locate it (same layout as 1.x)."""
     try:
         for md in sorted(out_dir.glob("*/txt/*.md")):
             return md
@@ -101,9 +110,9 @@ def _find_output_md(out_dir: Path) -> Path | None:
 
 
 def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
-    """Run magic-pdf on a PDF; on success copy the .md to the sidecar.
+    """Run mineru (pipeline backend) on a PDF; on success copy the .md to the sidecar.
 
-    magic-pdf's CLI exits 0 even on failure, so success is defined as the
+    mineru's CLI exits 0 even on failure, so success is defined as the
     output .md existing after a zero-exit run (see MinerU-Setup.md).
     """
     bin_ = Path(cfg["bin"])
@@ -115,11 +124,19 @@ def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
     out_dir = work / "out"
     log_path = work / "run.log"
     env = dict(os.environ)
-    env["VIRTUAL_VRAM_SIZE"] = "4"  # limit batch_ratio to 1 (batch_size 16) to prevent GTT ballooning
+    # MinerU 3.x GTT guard (renamed from 1.x VIRTUAL_VRAM_SIZE): None -> real
+    # GPU mem (batch_ratio 16, fastest); set via config for conservative mode.
+    vvs = cfg.get("virtual_vram_size")
+    if vvs is not None:
+        env["MINERU_VIRTUAL_VRAM_SIZE"] = str(vvs)
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    if cfg.get("config_json"):
-        env["MINERU_TOOLS_CONFIG_JSON"] = str(cfg["config_json"])
-    cmd = [str(bin_), "-p", str(pdf_path), "-o", str(out_dir), "-m", "txt"]
+    cmd = [
+        str(bin_),
+        "-p", str(pdf_path),
+        "-o", str(out_dir),
+        "-m", "txt",
+        "-b", str(cfg.get("backend", "pipeline")),
+    ]
     try:
         start = time.time()
         with open(log_path, "w", encoding="utf-8") as lf:

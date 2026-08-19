@@ -53,10 +53,10 @@ METHODS_NEW = '''            except Exception as e:
         return config
 
     # [contextual patch] Deterministic Contextual Retrieval (DCR): a lean
-    # structural prefix ([Paper: <title> | Section: <breadcrumb>]) is prepended
-    # to every chunk IN MEMORY before storing/embedding, so empirical models and
-    # proofs keep their paper/section identity in both the dense and the BM25
-    # index. Sidecar .md files on disk stay untouched. See New-RAG-Setup.md.
+    # structural prefix ([Paper: <title> (<author> <year>) | Section: <breadcrumb>])
+    # is prepended to every chunk IN MEMORY before storing/embedding, so empirical
+    # models and proofs keep their paper/section identity in both the dense and
+    # the BM25 index. Sidecar .md files on disk stay untouched. See New-RAG-Setup.md.
     _HEADING_RE = re.compile(r"(?m)^(#{1,4})[ \\t]+(.*?)[ \\t]*$")
 
     def _load_contextual_config(self) -> dict[str, Any]:
@@ -75,6 +75,39 @@ METHODS_NEW = '''            except Exception as e:
             except Exception as e:
                 logger.warning(f"Error loading contextual config: {e}")
         return config
+
+    @staticmethod
+    def _format_citation(item: dict[str, Any]) -> str:
+        """[contextual patch] Extract a compact '<Author> <Year>' citation string."""
+        data = item.get("data", {}) if isinstance(item, dict) else {}
+        creators = data.get("creators", [])
+        author_names = []
+        if isinstance(creators, list):
+            for c in creators:
+                if not isinstance(c, dict):
+                    continue
+                last = (c.get("lastName") or c.get("name") or c.get("firstName") or "").strip()
+                if last:
+                    author_names.append(last)
+        author_str = ""
+        if len(author_names) == 1:
+            author_str = author_names[0]
+        elif len(author_names) == 2:
+            author_str = f"{author_names[0]} & {author_names[1]}"
+        elif len(author_names) >= 3:
+            author_str = f"{author_names[0]} et al."
+
+        raw_date = str(data.get("date") or "").strip()
+        year_match = re.search(r"\\b(19\\d\\d|20\\d\\d)\\b", raw_date)
+        year = year_match.group(1) if year_match else ""
+
+        if author_str and year:
+            return f"{author_str} {year}"
+        if author_str:
+            return author_str
+        if year:
+            return year
+        return ""
 
     @staticmethod
     def _clean_heading(text: str) -> str:
@@ -110,13 +143,15 @@ METHODS_NEW = '''            except Exception as e:
                              positions, crumbs) -> str:
         """[contextual patch] Return *chunk_text* with the DCR prefix prepended.
 
-        Prefix shape: ``[Paper: <title> | Section: <breadcrumb>]\\n`` (title-only
-        when no section applies). Kept lean (~10-15 tokens): strictly
+        Prefix shape: ``[Paper: <title> (<author> <year>) | Section: <breadcrumb>]\\n``
+        (title-only when no section applies). Kept lean (~15-20 tokens): strictly
         structural — no abstract or content injection.
         """
         if not self._contextual_config.get("enabled", False):
             return chunk_text
         title = (item.get("data", {}).get("title") or "").strip()
+        citation = self._format_citation(item)
+
         breadcrumb = ""
         if positions:
             import bisect
@@ -133,10 +168,17 @@ METHODS_NEW = '''            except Exception as e:
         max_t = int(self._contextual_config.get("max_title_chars", 48) or 48)
         if len(title) > max_t:
             title = title[: max_t - 3].rstrip() + "..."
-        if title and breadcrumb:
-            return f"[Paper: {title} | Section: {breadcrumb}]\\n" + chunk_text
-        if title:
-            return f"[Paper: {title}]\\n" + chunk_text
+
+        paper_label = title
+        if title and citation:
+            paper_label = f"{title} ({citation})"
+        elif citation:
+            paper_label = citation
+
+        if paper_label and breadcrumb:
+            return f"[Paper: {paper_label} | Section: {breadcrumb}]\\n" + chunk_text
+        if paper_label:
+            return f"[Paper: {paper_label}]\\n" + chunk_text
         if breadcrumb:
             return f"[Section: {breadcrumb}]\\n" + chunk_text
         return chunk_text
