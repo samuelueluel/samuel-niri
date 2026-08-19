@@ -102,9 +102,7 @@ modules:
 
   # ── Stable kernel (kernel-vanilla, latest upstream stable) ────────────────
   # Replaces the UBlue base kernel with the latest kernel.org stable release,
-  # keeping this image ahead of Fedora's stock kernel. The actual vanilla
-  # builds live in the @kernel-vanilla/fedora repo (a coprdep of the stable
-  # project); @kernel-vanilla/stable itself publishes no fc44 packages.
+  # keeping this image ahead of Fedora's stock kernel.
   # Uses replace (distro-sync) so the COPR version wins even if base image
   # already has the same or older version installed.
   # NOTE: Terra's kernel-p03 (7.2.0-rc*) is excluded downstream (see halo
@@ -116,7 +114,7 @@ modules:
       copr:
         - "@kernel-vanilla/stable"
     replace:
-      - from-repo: coprdep:copr.fedorainfracloud.org:group_kernel-vanilla:fedora
+      - from-repo: copr:copr.fedorainfracloud.org:group_kernel-vanilla:stable
         packages:
           - kernel
           - kernel-core

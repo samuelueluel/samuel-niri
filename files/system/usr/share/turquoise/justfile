@@ -877,19 +877,34 @@ update:
             cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/ || true
             cp -Pf build/bin/*.so* /out/vulkan/bin/ 2>/dev/null || true
             
-            echo "Building ROCm (gaetan-puleo)..."
-            export CC=/opt/rocm/bin/amdclang
-            export CXX=/opt/rocm/bin/hipcc
-            git clone --depth=1 https://github.com/gaetan-puleo/llama-cpp-strix-halo.git /tmp/rocm-src
-            cd /tmp/rocm-src
-            cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1151 -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
-            cmake --build build --config Release -j$(nproc)
-            mkdir -p /out/rocm/rocm
-            rm -f /out/rocm/llama-server /out/rocm/llama-cli /out/rocm/llama-bench /out/rocm/lib*.so*
-            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/rocm/ || true
-            cp -Pf build/bin/*.so* /out/rocm/ 2>/dev/null || true
-            cp -a /opt/rocm/lib/* /out/rocm/rocm/ 2>/dev/null || true
-            cp -a /usr/lib/x86_64-linux-gnu/libssl.so.* /usr/lib/x86_64-linux-gnu/libcrypto.so.* /out/rocm/ 2>/dev/null || true
+            echo "Syncing ROCm 7.14 (kyuz0 toolbox)..."
+            podman pull docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.14 || true
+            podman run --rm -v lemonade-llama:/out:rw,z docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.14 bash -c '
+                set -euo pipefail
+                export LD_LIBRARY_PATH=/opt/rocm/core/lib/rocm_sysdeps/lib:/opt/rocm/core/lib
+                OUT=/out/rocm.new
+                rm -rf "$OUT"
+                mkdir -p "$OUT/rocm"
+                cp -a /usr/local/bin/llama-server /usr/local/bin/llama-cli /usr/local/bin/llama-bench "$OUT/"
+                # Fedora 44 glibc base so the Fedora-built binaries run inside the Ubuntu lemonade container
+                cp -aL /usr/lib64/ld-linux-x86-64.so.2 /usr/lib64/libc.so.6 /usr/lib64/libm.so.6 /usr/lib64/libdl.so.2 /usr/lib64/libpthread.so.0 /usr/lib64/librt.so.1 "$OUT/"
+                # transitive shared-lib closure (skip ROCm libs — they resolve from rocm/lib via --library-path)
+                declare -A seen=(); queue=(/usr/local/bin/llama-server /usr/local/bin/llama-cli /usr/local/bin/llama-bench)
+                while (( ${#queue[@]} )); do
+                    f="${queue[0]}"; queue=("${queue[@]:1}")
+                    while read -r lib; do
+                        case "$lib" in /opt/rocm/*) continue;; esac
+                        [ -f "$lib" ] || continue; [ "${seen[$lib]+1}" ] && continue
+                        seen[$lib]=1; cp -aL "$lib" "$OUT/" 2>/dev/null || true; queue+=("$lib")
+                    done < <(ldd "$f" 2>/dev/null | grep -oE "/[^ (]+" || true)
+                done
+                cp -a /opt/rocm/core-7.14 "$OUT/rocm/"
+                ln -sfn core-7.14/bin "$OUT/rocm/bin"; ln -sfn core-7.14/include "$OUT/rocm/include"
+                ln -sfn core-7.14/lib "$OUT/rocm/lib"; ln -sfn core-7.14/libexec "$OUT/rocm/libexec"
+                ln -sfn core-7.14/share "$OUT/rocm/share"; ln -sfn core-7.14/lib/llvm "$OUT/rocm/llvm"
+                ln -sfn core-7.14/lib/llvm/amdgcn "$OUT/rocm/amdgcn"; ln -sfn core-7.14 "$OUT/rocm/core"
+                mv "$OUT" /out/rocm
+            ' || true
         ' || true
 
         echo -e "\033[36m  Syncing MoE/Dense dispatch wrapper (canonical: /usr/share/turquoise/llama-dispatch-wrapper.sh)...\033[0m"
