@@ -845,6 +845,27 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply the Deterministic Citation Graph patch (idempotent).
+    # Builds an in-memory NetworkX directed graph over Zotero metadata and MinerU
+    # bibliography sidecars ([REF]) to provide collection hub detection, paper
+    # lineage tracking, and bibliographic coupling tools. Marker: [graph patch].
+    echo -e "\033[36m  Re-applying zotero-mcp Deterministic Citation Graph patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZGPATCH=/usr/share/turquoise/zotero-mcp-graph-patch.py
+    [[ -f "$ZGPATCH" ]] || ZGPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-graph-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping graph patch.\033[0m"
+    elif [[ ! -f "$ZGPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-graph-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZGPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mCitation graph patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: graph patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mGraph patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"

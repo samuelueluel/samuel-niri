@@ -20,18 +20,57 @@ import math
 import re
 from pathlib import Path
 
+_LATEX_COMMAND_RE = re.compile(r"\\([a-zA-Z]+)(?:_\{?([a-zA-Z0-9_\-]+)\}?)?")
+_MATH_VAR_SUB_RE = re.compile(r"\b([a-zA-Z])_\{?([a-zA-Z0-9_\-]+)\}?\b")
+_COMPOUND_RE = re.compile(r"[a-z0-9]+(?:[_\-][a-z0-9]+)+")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def tokenize(text: str) -> list[str]:
-    """Analyzer tuned for academic text.
+    """Analyzer tuned for academic and econometric text.
 
-    Lowercase alphanumeric runs only (drops punctuation, LaTeX braces and
-    backslashes, HTML tags). No stemming: exact-match tokens like variable
-    names, acronyms and formula fragments are the point of the sparse leg;
-    stemming would mangle them. Single-char tokens dropped as noise.
+    - Emits compound identifiers (e.g. `did_multiplegt_dyn`, `log_wage`, `p-value`)
+      AND their constituent sub-tokens (`did`, `multiplegt`, `dyn`).
+    - Normalizes LaTeX math with subscripts (e.g. `\\beta_1` -> `beta_1`,
+      `y_{it}` -> `y_it`, `\\tau_{2sls}` -> `tau_2sls`) and base macros (`beta`, `tau`).
+    - Extracts standard lowercase alphanumeric words (length > 1).
+    - Preserves exact-match identifiers for high-IDF ranking without stemming.
     """
-    return [t for t in _TOKEN_RE.findall(text.lower()) if len(t) > 1]
+    text_lower = text.lower()
+    tokens: list[str] = []
+
+    # 1. Explicit LaTeX commands & subscripts: \beta, \beta_1, \tau_{2sls}
+    for m in _LATEX_COMMAND_RE.finditer(text_lower):
+        cmd = m.group(1)
+        sub = m.group(2)
+        if sub:
+            tokens.append(f"{cmd}_{sub}")
+            if len(sub) > 1:
+                tokens.append(sub)
+        if len(cmd) > 1:
+            tokens.append(cmd)
+
+    # 2. Single-letter math variables with subscripts: y_{it}, x_i, t_0
+    for m in _MATH_VAR_SUB_RE.finditer(text_lower):
+        var = m.group(1)
+        sub = m.group(2)
+        tokens.append(f"{var}_{sub}")
+        if len(sub) > 1:
+            tokens.append(sub)
+
+    # 3. Compound identifiers: snake_case, kebab-case (e.g. did_multiplegt_dyn, p-value)
+    for m in _COMPOUND_RE.finditer(text_lower):
+        compound = m.group(0)
+        tokens.append(compound)
+        if "-" in compound:
+            tokens.append(compound.replace("-", "_"))
+
+    # 4. Standard alphanumeric words (len > 1)
+    for t in _TOKEN_RE.findall(text_lower):
+        if len(t) > 1:
+            tokens.append(t)
+
+    return tokens
 
 
 def rrf_merge(rankings: list[list[str]], k: int = 60) -> list[tuple[str, float]]:
