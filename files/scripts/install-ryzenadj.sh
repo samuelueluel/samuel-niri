@@ -16,6 +16,6 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 echo ">>> Downloading ryzenadj ${VERSION} (musl static)..."
 curl -fsSL -o "$WORK_DIR/ryzenadj.tar.gz" "$URL"
 tar xzf "$WORK_DIR/ryzenadj.tar.gz" -C "$WORK_DIR"
-install -m 0755 "$WORK_DIR"/ryzenadj-linux-musl-static-x86_64/ryzenadj /usr/local/bin/ryzenadj
+install -D -m 0755 "$WORK_DIR"/ryzenadj-linux-musl-static-x86_64/ryzenadj /usr/bin/ryzenadj
 
-echo ">>> Done: $(/usr/local/bin/ryzenadj -h 2>&1 | head -1 || true)"
+echo ">>> Done: $(/usr/bin/ryzenadj -h 2>&1 | head -1 || true)"
