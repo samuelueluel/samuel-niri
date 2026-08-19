@@ -33,20 +33,15 @@ modules:
       - amd_iommu=off
 
   # ── Webcam kmod — AMD ISP4 ────────────────────────────────────────────────
-  # The ISP4 capture driver (amd_isp4_capture) is in-tree in Fedora's kernels
-  # (7.1.6+) but NOT in kernel-vanilla COPR builds (verified: no isp4_capture
-  # in the 7.1.6/7.1.7/7.1.8 vanilla kernel-modules filelists — only the
-  # amd_isp4 platform driver). We run vanilla kernels, so the out-of-tree
-  # akmod stays required. Re-disable only once kernel-vanilla ships the
-  # driver in-tree.
-  - type: script
-    scripts:
-      - build-isp4-akmod.sh
+  # The ISP4 capture driver (amd_isp4_capture) is in-tree in kernel-vanilla
+  # 7.2.0+ (CONFIG_VIDEO_AMD_ISP4). Out-of-tree akmod build disabled.
+  # - type: script
+  #   scripts:
+  #     - build-isp4-akmod.sh
 
   # ── Wi-Fi kmod — MT7925 & RyzenAdj ─────────────────────────────────────────
   - type: script
     scripts:
-      # - build-isp4-akmod.sh
       - build-mt7925-kmod.sh
       - install-ryzenadj.sh
 
