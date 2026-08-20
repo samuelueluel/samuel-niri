@@ -105,9 +105,6 @@ modules:
   # keeping this image ahead of Fedora's stock kernel.
   # Uses replace (distro-sync) so the COPR version wins even if base image
   # already has the same or older version installed.
-  # NOTE: Terra's kernel-p03 (7.2.0-rc*) is excluded downstream (see halo
-  # recipe) so kernel-devel-matched resolves to the vanilla devel, not Terra's
-  # higher-versioned rc kernel whose %posttrans dracut run fails.
   # Secure Boot validation must be disabled in BIOS (verified disabled).
   - type: dnf
     repos:
@@ -132,7 +129,7 @@ modules:
       copr:
         - yalter/niri # niri compositor
         - ublue-os/packages # uupd unified updater
-        # terra.repo is baked in via the files module (avoids CI network block)
+        - brycensranch/gpu-screen-recorder-git # gpu-screen-recorder for noctalia
     install:
       install-weak-deps: false
       packages:
