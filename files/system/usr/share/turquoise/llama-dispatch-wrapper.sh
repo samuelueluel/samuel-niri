@@ -17,11 +17,15 @@ for arg in "$@"; do
 done
 
 if [[ $USE_ROCM -eq 1 ]]; then
-  # kyuz0 ROCm 7.14 HIP engine (Fedora 44 build — run via the Fedora loader for glibc
-  # compatibility inside the Ubuntu-based lemonade container)
-  exec /opt/lemonade/llama/rocm/ld-linux-x86-64.so.2 \
-    --library-path "/opt/lemonade/llama/rocm:/opt/lemonade/llama/rocm/rocm/lib:/opt/lemonade/llama/rocm/rocm/lib/rocm_sysdeps/lib:/opt/lemonade/llama/rocm/rocm/lib/llvm/lib" \
-    /opt/lemonade/llama/rocm/llama-server "${CLEAN_CMD[@]}"
+  # Gaetan Puleo ROCm HIP engine (Strix Halo gfx1151)
+  if [[ -f /opt/lemonade/llama/rocm/ld-linux-x86-64.so.2 ]]; then
+    exec /opt/lemonade/llama/rocm/ld-linux-x86-64.so.2 \
+      --library-path "/opt/lemonade/llama/rocm:/opt/lemonade/llama/rocm/lib:/opt/lemonade/llama/rocm/rocm/lib:/opt/lemonade/llama/rocm/rocm/lib/rocm_sysdeps/lib:/opt/lemonade/llama/rocm/rocm/lib/llvm/lib" \
+      /opt/lemonade/llama/rocm/llama-server "${CLEAN_CMD[@]}"
+  else
+    export LD_LIBRARY_PATH="/opt/lemonade/llama/rocm/lib:/opt/lemonade/llama/rocm:/opt/rocm/lib:/opt/rocm/lib/llvm/lib:$LD_LIBRARY_PATH"
+    exec /opt/lemonade/llama/rocm/llama-server "${CLEAN_CMD[@]}"
+  fi
 else
   # Nathanw1014 Vulkan RADV engine (strix-halo-vulkan)
   export VK_ICD_FILENAMES="/opt/lemonade/llama/vulkan/driver/radeon_icd.x86_64.json"
