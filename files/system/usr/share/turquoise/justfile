@@ -885,18 +885,24 @@ update:
 
             export PATH=/opt/rocm/bin:$PATH
 
-            echo "Building Vulkan (Nathanw1014)..."
+            echo "Syncing Vulkan RADV driver bundle..."
+            mkdir -p /tmp/vulkan-portable /out/vulkan/driver /out/vulkan/bin
+            curl -sL https://github.com/Nathanw1014/strix-halo-llamacpp/releases/latest/download/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /tmp/vulkan-portable --strip-components=1 || true
+            if [[ -d /tmp/vulkan-portable/driver ]]; then
+                cp -a /tmp/vulkan-portable/driver/* /out/vulkan/driver/
+            fi
+
+            echo "Building Vulkan Nudge Engine (samuelueluel/strix-halo-llamacpp-nudge)..."
             export CC=gcc
             export CXX=g++
             git clone -b strix-halo-vulkan --depth=1 https://github.com/samuelueluel/strix-halo-llamacpp-nudge.git /tmp/vulkan-src
             cd /tmp/vulkan-src
             cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
-            cmake --build build --config Release -j$(nproc)
-            mkdir -p /out/vulkan
-            curl -L https://github.com/Nathanw1014/strix-halo-llamacpp/releases/latest/download/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /out/vulkan --strip-components=1 || true
+            cmake --build build --config Release -j$(nproc) --target llama-server llama-cli llama-bench
+
+            # Clean stale dynamic libraries from previous portable unpacks and install static binaries
             rm -f /out/vulkan/bin/lib*.so*
-            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/ || true
-            cp -Pf build/bin/*.so* /out/vulkan/bin/ 2>/dev/null || true
+            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/
         ' || true
             
         echo -e "\033[36m  Compiling ROCm HIP engine (Gaetan Puleo - Strix Halo gfx1151)...\033[0m"
@@ -922,6 +928,7 @@ update:
             cp -Pf build/bin/*.so* "$OUT/lib/" 2>/dev/null || true
             cp -aL /opt/rocm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
             cp -aL /opt/rocm/llvm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
+            cp -a /opt/rocm/lib/rocblas "$OUT/lib/" 2>/dev/null || true
 
             export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/llvm/lib:"$OUT/lib":$PWD/build/bin
             declare -A seen=(); queue=("$OUT/llama-server" "$OUT/llama-cli" "$OUT/llama-bench" "$OUT/lib"/*.so*)
