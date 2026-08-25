@@ -903,6 +903,29 @@ update:
             rm -f /out/vulkan/bin/lib*.so*
             cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/
         ' || true
+
+        echo -e "\033[36m  Compiling Laurent Vulkan Engine (LaurentZuijdwijk/llama.cpp - ROCmFP4 & Adaptive DFlash2)...\033[0m"
+        podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.14.0-full bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslc glslang-tools spirv-headers spirv-tools libssl-dev
+
+            mkdir -p /tmp/vulkan-portable /out/vulkan-laurent/driver /out/vulkan-laurent/bin
+            curl -sL https://github.com/Nathanw1014/strix-halo-llamacpp/releases/latest/download/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /tmp/vulkan-portable --strip-components=1 || true
+            if [[ -d /tmp/vulkan-portable/driver ]]; then
+                cp -a /tmp/vulkan-portable/driver/* /out/vulkan-laurent/driver/
+            fi
+
+            export CC=gcc CXX=g++
+            git clone --depth=1 https://github.com/LaurentZuijdwijk/llama.cpp.git /tmp/laurent-src
+            cd /tmp/laurent-src
+            cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+            cmake --build build --config Release -j$(nproc) --target llama-server llama-cli llama-bench
+
+            rm -f /out/vulkan-laurent/bin/lib*.so*
+            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan-laurent/bin/
+        ' || true
             
         echo -e "\033[36m  Compiling ROCm HIP engine (Gaetan Puleo - Strix Halo gfx1151)...\033[0m"
         podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.14.0-full bash -c '
@@ -943,16 +966,16 @@ update:
         ' || true
 
         echo -e "\033[36m  Syncing MoE/Dense dispatch wrapper (canonical: /usr/share/turquoise/llama-dispatch-wrapper.sh)...\033[0m"
-        # lemond v10.8 launches /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server for
-        # llamacpp_backend=vulkan — NOT /opt/lemonade/llama/llama-server. Both locations must
-        # hold this wrapper or DeepSeek models silently misroute to the ROCm engine (or a
-        # Lemonade image upgrade overwrites the store copy with a stock binary).
+        # lemond v10.8 launches /opt/lemonade/llama/vulkan/bin/llama-server or /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server for
+        # llamacpp_backend=vulkan. All locations must hold this wrapper while Nathan real binary lives at llama-server-real.
         WRAPPER_SRC="$HOME/turquoise/files/system/usr/share/turquoise/llama-dispatch-wrapper.sh"
         [[ -f "$WRAPPER_SRC" ]] || WRAPPER_SRC=/usr/share/turquoise/llama-dispatch-wrapper.sh
         if [[ -f "$WRAPPER_SRC" ]]; then
+            podman exec lemonade bash -c 'if [[ -f /opt/lemonade/llama/vulkan/bin/llama-server && ! -f /opt/lemonade/llama/vulkan/bin/llama-server-real ]]; then mv /opt/lemonade/llama/vulkan/bin/llama-server /opt/lemonade/llama/vulkan/bin/llama-server-real; fi' || true
             podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server || true
+            podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/vulkan/bin/llama-server || true
             podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
-            podman exec lemonade chmod +x /opt/lemonade/llama/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
+            podman exec lemonade chmod +x /opt/lemonade/llama/llama-server /opt/lemonade/llama/vulkan/bin/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
         else
             echo -e "\033[31m  WARNING: $WRAPPER_SRC not found (image predates wrapper deployment) — skipping wrapper sync.\033[0m"
         fi
