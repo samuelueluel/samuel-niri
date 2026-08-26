@@ -75,7 +75,12 @@ def _get_graph() -> CitationGraph:
 
 
 def _node_marker(node: dict) -> str:
-    return " [external reference]" if node.get("node_type") == "external_reference" else ""
+    if node.get("node_type") != "external_reference":
+        return ""
+    ext_id = node.get("external_id", "")
+    if ext_id.startswith("meta:"):
+        return " [external ref: metadata]"
+    return " [external reference]"
 
 
 def _scope_label(scope: str, collection_key: str = "") -> str:
@@ -114,6 +119,7 @@ def zotero_rebuild_citation_graph(ctx: Context = None) -> str:
             f"- DOI-bearing entries: **{stats.get('reference_entries_with_doi', 0)}**\n"
             f"- Resolved entries: **{stats.get('resolved_reference_entries', 0)}**\n"
             f"- External DOI entries: **{stats.get('external_reference_entries', 0)}**\n"
+            f"- Metadata-derived external entries: **{stats.get('metadata_external_reference_entries', 0)}**\n"
             f"- Ambiguous entries: **{stats.get('ambiguous_reference_entries', 0)}**\n"
             f"- Unresolved entries: **{stats.get('unresolved_reference_entries', 0)}**\n"
             f"- Orphan sidecars: **{stats.get('orphan_reference_sidecars', 0)}** "
@@ -137,6 +143,13 @@ def zotero_get_collection_hubs(
     ``collection-expanded``, and ``library-expanded``. Expanded scopes may
     return external-reference nodes recovered from sidecar bibliographies.
 
+    ``inward_citations`` counts RESOLVED inbound edges only: bibliography
+    entries that never resolved to a graph node (``unresolved`` — often the
+    majority in economics sidecars) are invisible to it, so it is a lower
+    bound and cannot rank external works at all. The output carries a
+    per-scope resolution-coverage line; use ``zotero_zotero_search_references``
+    to count true citation occurrences.
+
     Args:
         collection_key: Collection key; required for collection scopes.
         top_n: Number of hub nodes to return (default: 5).
@@ -149,13 +162,25 @@ def zotero_get_collection_hubs(
             return f"No hub nodes found for {_scope_label(scope, collection_key)}."
 
         lines = [f"# Citation Hub Nodes ({_scope_label(scope, collection_key)})\n"]
+        cov = hubs[0].get("resolution_coverage") if hubs else None
+        if cov:
+            entries = sum(cov.values())
+            lines.append(
+                f"*Resolution coverage (citing sidecars in scope): {entries} entries — "
+                + ", ".join(f"{k}: {v}" for k, v in sorted(cov.items()))
+            )
+            lines.append(
+                "*Counts are graph inbound edges only; unresolved/ambiguous entries are not "
+                "counted. `ext:meta` counts are approximate — use `zotero_zotero_search_references` "
+                "for exact totals.\n"
+            )
         for i, hub in enumerate(hubs, 1):
             yr = f" ({hub['year']})" if hub['year'] else ""
             au = f" — *{hub['creators']}*" if hub['creators'] else ""
             marker = _node_marker(hub)
             lines.append(f"{i}. **{hub['title']}**{yr}{au}{marker}")
             lines.append(
-                f"   - Key: `{hub['item_key']}` | Inward citations: **{hub['inward_citations']}**"
+                f"   - Key: `{hub['item_key']}` | Inward citations: **{hub['inward_citations']}** (graph edges only)"
             )
         return "\n".join(lines)
     except Exception as e:

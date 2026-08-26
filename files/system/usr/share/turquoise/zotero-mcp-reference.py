@@ -123,7 +123,11 @@ def _load_source_metadata(zotero_db_path: Path) -> dict[str, dict[str, Any]]:
                  WHERE ic.itemID = i.itemID ORDER BY ic.orderIndex) AS creators,
                 (SELECT typeName FROM itemTypes WHERE itemTypeID = i.itemTypeID) AS item_type
             FROM items i
-            WHERE i.itemTypeID NOT IN (1, 14)
+            JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
+            -- Filter by type NAME, not hardcoded itemTypeID (Zotero 10
+            -- renumbered the IDs; the old (1, 14) leak in attachments and
+            -- dropped documents).
             """
         )
         records: dict[str, dict[str, Any]] = {}

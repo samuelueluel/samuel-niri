@@ -160,6 +160,71 @@ def _external_title(raw_reference: str, fallback: str) -> str:
     return label or fallback
 
 
+def _title_fingerprint(title: str) -> str:
+    """Stable alphanumeric fingerprint of a title for external-node identity.
+
+    Lowercases, drops a leading article, keeps alnum only, and truncates so
+    that citation variants of the same paper (e.g. "A.E.R." vs "American
+    Economic Review") produce the same identity key.
+    """
+    t = (title or "").lower()
+    t = re.sub(r"^(?:the|a|an)\s+", "", t)
+    t = re.sub(r"[^a-z0-9]+", "", t)
+    return t[:64]
+
+
+def _extract_meta_identity(reference_text: str) -> Optional[tuple[str, str, str]]:
+    """Extract (first-author surname, year, title) from a DOI-less reference.
+
+    Used to create metadata-based external graph nodes (``ext:meta:*``) for
+    entries that resolve to no library item and carry no DOI. Returns None
+    when the reference is too ambiguous, too short, or unparseable. The title
+    is cut at the first quoted string or the first sentence boundary so
+    journal/volume/page noise stays out of the identity fingerprint.
+    """
+    text = _normalize_reference(reference_text)
+    if not text or len(text) > _MAX_METADATA_MATCH_LENGTH:
+        return None
+    year_match = _YEAR_RE.search(text)
+    if not year_match:
+        return None
+    year = year_match.group(0)[:4]
+    pre = text[: year_match.start()].strip()
+    post = text[year_match.end():].strip()
+    # Strip leading separators left by the author-list year (e.g. ". " after
+    # "2011." or "(1997)") so they don't become the title cut point.
+    post = re.sub(r"^[^A-Za-z0-9À-ÿ]+", "", post)
+    if not pre or not post:
+        return None
+    author_tokens = re.findall(r"[A-Za-zÀ-ÿ]+", pre)
+    if not author_tokens:
+        return None
+    surname = author_tokens[0].lower()
+    # Title: prefer the first quoted string (try BEFORE stripping leading
+    # separators so a leading opening quote is still present; tolerate
+    # mismatched OCR quote characters). Otherwise strip leading separators
+    # left by the author-list year and cut at the first sentence boundary.
+    quoted = re.search(r"[\"\u201c]([^\"\u201d\u201c]{4,}?)[\"\u201d\u201c]", post)
+    if quoted:
+        title = quoted.group(1)
+    else:
+        post = re.sub(r"^[^A-Za-z0-9À-ÿ]+", "", post)
+        cut = re.search(r"\.\s*[\"\u201d]?\s*(?=[A-ZÀ-ÿ])", post)
+        if cut and cut.start() > 0:
+            title = post[: cut.start()].strip()
+        else:
+            # No usable sentence boundary: keep a bounded head of the post-year
+            # text so journal/volume noise stays out of the fingerprint.
+            head = post.split(",")[0]
+            title = head[:120] if len(head) > 4 else post[:120]
+    title = re.sub(r"\s+", " ", title).strip(" \t\r\n.,;:")
+    if len(title) < 4 or len(title) > 400:
+        return None
+    if len(re.findall(r"[A-Za-z0-9]+", title)) < 2:
+        return None
+    return surname, year, title
+
+
 @dataclass
 class GraphNode:
     item_key: str
@@ -221,7 +286,11 @@ class CitationGraph:
              WHERE ic.itemID = i.itemID
              ORDER BY ic.orderIndex) as creators
         FROM items i
-        WHERE i.itemTypeID NOT IN (1, 14)  -- exclude attachments and standalone notes
+        JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+        WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
+        -- Filter by type NAME, not hardcoded itemTypeID: IDs are not stable
+        -- across Zotero versions (e.g. Zotero 10 renumbered them), which
+        -- previously leaked attachment nodes in and dropped documents out.
         """
         cur.execute(query_items)
         rows = cur.fetchall()
@@ -325,6 +394,7 @@ class CitationGraph:
         external_reference_entries = 0
         ambiguous_reference_entries = 0
         unresolved_reference_entries = 0
+        metadata_external_reference_entries = 0
         reference_split_methods: dict[str, int] = defaultdict(int)
         reference_entries_by_item_type: dict[str, int] = defaultdict(int)
 
@@ -539,6 +609,72 @@ class CitationGraph:
                             )
                         elif len(candidates) > 1:
                             ambiguous = True
+
+                        # No library match and no DOI: create a metadata-based
+                        # external node from a conservative identity extraction
+                        # (first-author surname + year + title fingerprint).
+                        # [graph meta-external nodes]
+                        if (
+                            not target_keys
+                            and not ambiguous
+                            and metadata_match_allowed
+                        ):
+                            meta = _extract_meta_identity(raw_reference)
+                            if meta:
+                                surname, meta_year, meta_title = meta
+                                src_meta = nodes.get(src_key)
+                                if (
+                                    src_meta
+                                    and src_meta.year
+                                    and src_meta.year[:4] == meta_year
+                                    and src_meta.creators
+                                    and surname in src_meta.creators.lower()
+                                ):
+                                    # Same first author + year as the source
+                                    # item: almost certainly a self-citation
+                                    # (e.g. own NBER WP). Do not self-edge.
+                                    meta = None
+                            if meta:
+                                surname, meta_year, meta_title = meta
+                                meta_key = _external_key(
+                                    "meta",
+                                    f"{surname}|{meta_year}|{_title_fingerprint(meta_title)}",
+                                )
+                                meta_conf = min(0.72, entry.confidence)
+                                nodes.setdefault(
+                                    meta_key,
+                                    GraphNode(
+                                        item_key=meta_key,
+                                        title=_external_title(meta_title, f"External {surname} {meta_year}"),
+                                        creators="",
+                                        year=meta_year,
+                                        citekey="",
+                                        doi="",
+                                        collections=[],
+                                        node_type=_EXTERNAL_NODE_TYPE,
+                                        external_id=f"meta:{surname}:{meta_year}",
+                                        raw_reference=raw_reference,
+                                        confidence=meta_conf,
+                                    ),
+                                )
+                                target_keys.add(meta_key)
+                                target_types.add(_EXTERNAL_NODE_TYPE)
+                                match_methods.add("meta_external")
+                                match_confidences.append(meta_conf)
+                                external = True
+                                metadata_external_reference_entries += 1
+                                edges.add((src_key, meta_key, "cites", 1.0))
+                                reference_evidence.append(
+                                    (
+                                        src_key,
+                                        meta_key,
+                                        str(sc_path),
+                                        entry_index,
+                                        raw_reference,
+                                        "meta_external",
+                                        meta_conf,
+                                    )
+                                )
 
                     if ambiguous and not target_keys:
                         match_methods.add("ambiguous_title_author_year")
@@ -780,6 +916,7 @@ class CitationGraph:
             "reference_entries_with_doi": reference_entries_with_doi,
             "resolved_reference_entries": resolved_reference_entries,
             "external_reference_entries": external_reference_entries,
+            "metadata_external_reference_entries": metadata_external_reference_entries,
             "ambiguous_reference_entries": ambiguous_reference_entries,
             "unresolved_reference_entries": unresolved_reference_entries,
             "reference_split_methods": dict(reference_split_methods),
@@ -910,6 +1047,35 @@ class CitationGraph:
             "confidence": data.get("confidence", 1.0),
         }
 
+    def _audit_coverage(self, source_keys: set[str]) -> Optional[dict[str, int]]:
+        """Count reference entries by resolution status for a source scope.
+
+        Queries the ``reference_audit`` table for bibliography entries whose
+        source item is in ``source_keys`` and groups by ``target_status``.
+        This is the honest complement to ``inward_citations``: hub counts
+        reflect *resolved* edges only, and every entry counted here as
+        ``unresolved``/``ambiguous`` is invisible to those counts. Returns
+        None when the audit table is unavailable (graph never built, or the
+        source scope is empty).
+        """
+        if not source_keys or not self.db_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            ph = ",".join(["?"] * len(source_keys))
+            cur.execute(
+                f"SELECT target_status, COUNT(*) AS n FROM reference_audit "
+                f"WHERE source_key IN ({ph}) GROUP BY target_status",
+                sorted(source_keys),
+            )
+            rows = {r["target_status"]: int(r["n"]) for r in cur.fetchall()}
+            conn.close()
+            return rows
+        except sqlite3.Error:
+            return None
+
     def get_collection_hubs(
         self,
         collection_key: str = "",
@@ -955,6 +1121,8 @@ class CitationGraph:
         if not target_keys:
             return []
 
+        coverage = self._audit_coverage(source_keys)
+
         citation_graph = self._citation_subgraph(scope, collection_key)
         # Explicitly restrict candidates to the requested target universe. This
         # keeps external nodes out of all legacy/library-only responses.
@@ -975,6 +1143,7 @@ class CitationGraph:
                 "inward_citations": degree,
                 "scope": scope,
                 "source_node_count": len(source_keys),
+                "resolution_coverage": coverage,
             })
         return results
 

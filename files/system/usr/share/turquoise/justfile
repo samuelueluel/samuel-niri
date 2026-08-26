@@ -658,10 +658,10 @@ update:
     fi
 
     # zotero-mcp-server: re-apply the collection-scoped semantic search patch (idempotent).
-    # Adds a `collection` param to zotero_semantic_search: chunk metadata stores each
-    # item's collection keys and the search filters DB-side (ChromaDB where clause,
-    # subcollections included). Backfill is metadata-only (no re-embed). Marker:
-    # [scoped patch]. See Zotero-MCP.md and New-RAG-Setup.md.
+    # Adds a `collection` param to zotero_semantic_search. Each query resolves live
+    # SQLite membership (including subcollections) to item keys and applies the same
+    # DB-side scope to ChromaDB and BM25. Item moves need no re-embed or backfill.
+    # Marker: [scoped patch]. See Zotero-MCP.md and New-RAG-Setup.md.
     echo -e "\033[36m  Re-applying zotero-mcp collection-scoped search patch...\033[0m"
     ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
     ZSPATCH=/usr/share/turquoise/zotero-mcp-scoped-patch.py
@@ -790,14 +790,14 @@ update:
         esac
     fi
 
-    # zotero-mcp-server: re-apply the retrieval-hygiene filters patch (idempotent).
-    # Four components, zero re-embed (BM25 rebuilds in ~2s; dense untouched):
-    #  1. reference-chunk classifier (DCR breadcrumb + author-year density)
-    #  2. exclude reference chunks from the BM25 leg (lexical noise killer;
-    #     dense keeps them so citation queries still work)
-    #  3. optional rerank-score floor (semantic_search.hybrid.rerank_floor)
-    #  4. figure queries: inject [Figure Schema] chunks via a "Figure Schema"
-    #     BM25 probe + boost their rerank score (semantic_search.hybrid.figure_boost)
+    # zotero-mcp-server: re-apply retrieval hygiene + score provenance (idempotent).
+    # Zero re-embed; rebuild the fast BM25 index after a classifier change:
+    #  1. precise bibliography classifier (DCR Section leaf; no title false positives)
+    #  2. suppress bibliography chunks from dense + BM25 semantic RAG; use the
+    #     separate reference index/tool for DOI/title/citation queries
+    #  3. expose raw local reranker scores and apply the configured score floor
+    #  4. figure queries inject schema candidates and may boost ordering, while the
+    #     displayed confidence remains the unboosted raw reranker score
     # Marker: [hybrid filter patch]. See Zotero-MCP.md and New-RAG-Setup.md.
     echo -e "\033[36m  Re-applying zotero-mcp retrieval-hygiene filters patch...\033[0m"
     ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)

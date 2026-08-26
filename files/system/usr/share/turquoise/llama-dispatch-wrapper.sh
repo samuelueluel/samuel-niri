@@ -3,6 +3,9 @@
 # Transparent dispatch wrapper for Lemonade Server
 # All models default to Nathanw1014 Vulkan RADV engine (strix-halo-vulkan)
 
+# Prioritize llama-server for kernel OOM killer termination over desktop session apps
+echo 1000 > /proc/self/oom_score_adj 2>/dev/null || true
+
 USE_ROCM=0
 USE_LAURENT=0
 CLEAN_CMD=()

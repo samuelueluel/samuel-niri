@@ -1,248 +1,278 @@
 #!/usr/bin/env python3
-"""Idempotently apply the zotero-mcp collection-scoped semantic search patch.
+"""Apply collection-scoped semantic search to an installed zotero_mcp package.
 
-Why: zotero_semantic_search can scope to a library (group_id) but not to a
-Zotero collection, so a single-index library can only be searched wholesale.
-This patch adds query-time collection scoping:
-- Queries local SQLite in real-time to resolve the collection key (or name) and its
-  subcollections to the live list of `item_key`s currently in that collection.
-- Filters ChromaDB and BM25 by `item_key IN [...]` DB-side at search time.
-- Moving items between collections in Zotero GUI works instantly in RAG with ZERO
-  manual metadata sync or re-embedding required.
+The MCP tool gains a ``collection`` argument (collection key preferred; exact
+name accepted). At query time the patch resolves that collection and all of
+its descendants from Zotero's local SQLite database, then applies the resulting
+item-key set to both ChromaDB and BM25 candidates. No re-embedding or metadata
+backfill is required when collection membership changes.
 
-Files (all in the zotero_mcp package dir passed as argv[1]):
-- local_db.py          LocalZoteroReader.resolve_collection_item_keys()
-- semantic_search.py   _resolve_collection_item_keys(); `collection` param + item_key filter in search()
-- tools/search.py      zotero_semantic_search tool gains `collection` param
+The transformation is component-idempotent and validates every required anchor
+before writing any file, so an upstream mismatch cannot leave a partial patch.
 
-Marker comment: "[scoped patch]". Re-applied by sjust update; see
-New-RAG-Setup.md (RAG strategy decision) and Zotero-MCP.md.
 Usage: zotero-mcp-scoped-patch.py <path/to/zotero_mcp-package-dir>
-Prints: "applied" | "already" | "mismatch" (mismatch exits 1).
+Prints: ``applied`` | ``already`` | ``mismatch``.
 """
+from __future__ import annotations
+
+import os
 import sys
 from pathlib import Path
 
+
+if len(sys.argv) != 2:
+    print("usage: zotero-mcp-scoped-patch.py <zotero_mcp-package-dir>", file=sys.stderr)
+    sys.exit(2)
+
 pkg = Path(sys.argv[1])
+paths = {
+    "local_db.py": pkg / "local_db.py",
+    "semantic_search.py": pkg / "semantic_search.py",
+    "tools/search.py": pkg / "tools" / "search.py",
+}
 errors: list[str] = []
-changed = False
+original: dict[str, str] = {}
+work: dict[str, str] = {}
 
-MARKER = "[scoped patch]"
+for name, path in paths.items():
+    if not path.exists():
+        errors.append(f"{name} not found")
+        continue
+    original[name] = path.read_text(encoding="utf-8")
+    work[name] = original[name]
 
-LOCAL_DB_METHODS = '''    # [scoped patch] collection-scoped semantic search helpers
+
+def replace_once(name: str, old: str, new: str, label: str) -> None:
+    src = work[name]
+    count = src.count(old)
+    if count != 1:
+        errors.append(f"{name} {label} anchor count={count}")
+        return
+    work[name] = src.replace(old, new, 1)
+
+
+def insert_before_once(name: str, anchor: str, addition: str, label: str) -> None:
+    replace_once(name, anchor, addition + anchor, label)
+
+
+LOCAL_DB_METHODS = '''    # [scoped patch] collection-scoped semantic-search helpers
     def resolve_collection_keys(self, collection_key: str) -> list[str]:
-        """Return the given collection key plus all descendant keys (recursive)."""
+        """Return ``collection_key`` plus every descendant key."""
         conn = self._get_connection()
         out: list[str] = []
+        seen: set[str] = set()
         frontier = [collection_key]
         while frontier:
             key = frontier.pop()
+            if key in seen:
+                continue
+            seen.add(key)
             row = conn.execute(
                 "SELECT collectionID FROM collections WHERE key = ?", (key,)
             ).fetchone()
             if row is None:
                 continue
             out.append(key)
-            for sub in conn.execute(
-                "SELECT key FROM collections WHERE parentCollectionID = ?", (row[0],)
-            ).fetchall():
-                frontier.append(sub[0])
+            frontier.extend(
+                child[0]
+                for child in conn.execute(
+                    "SELECT key FROM collections WHERE parentCollectionID = ?", (row[0],)
+                ).fetchall()
+            )
         return out
 
     def resolve_collection_item_keys(self, collection_identifier: str) -> list[str]:
-        """Return all item keys belonging to collection_identifier (key or name) and subcollections."""
+        """Return top-level item keys in a collection and its descendants.
+
+        ``collection_identifier`` may be an exact key or an exact
+        case-insensitive name. A key is preferred because names need not be
+        unique across a library.
+        """
         conn = self._get_connection()
         target_key = collection_identifier
         row = conn.execute(
             "SELECT key FROM collections WHERE key = ?", (collection_identifier,)
         ).fetchone()
-        if not row:
-            name_row = conn.execute(
-                "SELECT key FROM collections WHERE collectionName = ? COLLATE NOCASE", (collection_identifier,)
-            ).fetchone()
-            if name_row:
-                target_key = name_row[0]
-            else:
+        if row is None:
+            rows = conn.execute(
+                "SELECT key FROM collections "
+                "WHERE collectionName = ? COLLATE NOCASE ORDER BY collectionID",
+                (collection_identifier,),
+            ).fetchall()
+            if len(rows) != 1:
                 return []
+            target_key = rows[0][0]
 
-        coll_keys = self.resolve_collection_keys(target_key)
-        if not coll_keys:
+        collection_keys = self.resolve_collection_keys(target_key)
+        if not collection_keys:
             return []
 
-        placeholders = ",".join("?" * len(coll_keys))
-        _row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-            "('collectionItems', 'itemCollections') ORDER BY name DESC LIMIT 1"
+        placeholders = ",".join("?" for _ in collection_keys)
+        table_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('collectionItems', 'itemCollections') "
+            "ORDER BY CASE name WHEN 'collectionItems' THEN 0 ELSE 1 END LIMIT 1"
         ).fetchone()
-        _join = _row[0] if _row else "collectionItems"
+        join_table = table_row[0] if table_row else "collectionItems"
         rows = conn.execute(
             f"""
             SELECT DISTINCT i.key
-            FROM {_join} ic
+            FROM {join_table} ic
             JOIN items i ON i.itemID = ic.itemID
             JOIN collections c ON c.collectionID = ic.collectionID
             WHERE c.key IN ({placeholders})
             """,
-            coll_keys
+            collection_keys,
         ).fetchall()
-        return [r[0] for r in rows]
+        return [row[0] for row in rows]
 
 '''
 
-SEMANTIC_HELPERS = '''    def _resolve_collection_item_keys(self, collection_identifier: str) -> list[str]:
-        """[scoped patch] Resolve all item keys in collection live from local SQLite."""
+SEMANTIC_HELPER = '''    def _resolve_collection_item_keys(self, collection_identifier: str) -> list[str]:
+        """[scoped patch] Resolve live collection membership from SQLite."""
         try:
             db_path = self.db_path
             if not db_path and self.config_path and os.path.exists(self.config_path):
-                with open(self.config_path) as _f:
-                    db_path = json.load(_f).get("semantic_search", {}).get("zotero_db_path")
+                with open(self.config_path) as config_file:
+                    config = json.load(config_file)
+                db_path = config.get("zotero_db_path") or config.get(
+                    "semantic_search", {}
+                ).get("zotero_db_path")
             with LocalZoteroReader(db_path=db_path) as reader:
                 return reader.resolve_collection_item_keys(collection_identifier)
-        except Exception as e:
-            logger.warning(f"collection item_keys resolution failed for '{collection_identifier}': {e}")
+        except Exception as exc:
+            logger.warning(
+                "collection item-key resolution failed for %r: %s",
+                collection_identifier,
+                exc,
+            )
             return []
 
 '''
 
+# 1. Local SQLite resolver.
+if "local_db.py" in work and "def resolve_collection_item_keys(" not in work["local_db.py"]:
+    insert_before_once(
+        "local_db.py",
+        "    def get_libraries(self) -> list[dict[str, Any]]:",
+        LOCAL_DB_METHODS,
+        "get_libraries",
+    )
 
-def _apply(path: Path, edits: list[tuple[str, str]], name: str) -> None:
-    """Apply edits to a file only when every anchor is present (all-or-nothing)."""
-    global changed
-    if MARKER in path.read_text(encoding="utf-8"):
-        return  # already patched
-    src = path.read_text(encoding="utf-8")
-    work = src
-    for old, new in edits:
-        if old in work:
-            work = work.replace(old, new, 1)
-        else:
-            errors.append(f"{name} anchor missing")
-            return
-    path.write_text(work, encoding="utf-8")
-    changed = True
+# 2. Semantic-search internal argument and live item-key where-clause.
+if "semantic_search.py" in work:
+    name = "semantic_search.py"
+    if "def _resolve_collection_item_keys(" not in work[name]:
+        insert_before_once(name, "    def search(self,\n", SEMANTIC_HELPER, "search helper")
 
+    if "collection_key: str | None = None" not in work[name]:
+        replace_once(
+            name,
+            "               group_id: int | None = None) -> dict[str, Any]:",
+            "               group_id: int | None = None,\n"
+            "               collection_key: str | None = None) -> dict[str, Any]:",
+            "search signature",
+        )
 
-# --- 1. local_db.py --------------------------------------------------------
-ldb = pkg / "local_db.py"
-if ldb.exists():
-    _apply(ldb, [
-        (
-            '    def __exit__(self, exc_type, exc_val, exc_tb):\n'
-            '        self.close()\n'
-            '\n'
-            '    def get_libraries(self) -> list[dict[str, Any]]:',
-            '    def __exit__(self, exc_type, exc_val, exc_tb):\n'
-            '        self.close()\n'
-            '\n'
-            + LOCAL_DB_METHODS +
-            '    def get_libraries(self) -> list[dict[str, Any]]:',
-        ),
-    ], "local_db.py")
-else:
-    errors.append("local_db.py not found")
+    if "# [scoped patch] live collection scope" not in work[name]:
+        replace_once(
+            name,
+            "            if group_id is not None:\n"
+            "                group_clause = {\"group_id\": int(group_id)}\n"
+            "                where = {\"$and\": [filters, group_clause]} if filters else group_clause\n",
+            "            if group_id is not None:\n"
+            "                group_clause = {\"group_id\": int(group_id)}\n"
+            "                where = {\"$and\": [filters, group_clause]} if filters else group_clause\n"
+            "            # [scoped patch] live collection scope via local item keys\n"
+            "            if collection_key is not None:\n"
+            "                target_keys = self._resolve_collection_item_keys(str(collection_key))\n"
+            "                coll_clause = (\n"
+            "                    {\"item_key\": target_keys[0]}\n"
+            "                    if len(target_keys) == 1\n"
+            "                    else {\"item_key\": {\"$in\": target_keys}}\n"
+            "                    if target_keys\n"
+            "                    else {\"item_key\": \"__EMPTY_OR_UNKNOWN_COLLECTION__\"}\n"
+            "                )\n"
+            "                where = {\"$and\": [where, coll_clause]} if where else coll_clause\n",
+            "where clause",
+        )
 
-# --- 2. semantic_search.py -------------------------------------------------
-ss = pkg / "semantic_search.py"
-if ss.exists():
-    _apply(ss, [
-        # 2a. helpers before search()
-        (
-            '    def search(self,\n'
-            '               query: str,\n'
-            '               limit: int = 10,\n'
-            '               filters: dict[str, Any] | None = None,\n'
-            '               group_id: int | None = None) -> dict[str, Any]:',
-            SEMANTIC_HELPERS +
-            '    def search(self,\n'
-            '               query: str,\n'
-            '               limit: int = 10,\n'
-            '               filters: dict[str, Any] | None = None,\n'
-            '               group_id: int | None = None,\n'
-            '               collection_key: str | None = None) -> dict[str, Any]:',
-        ),
-        # 2b. where clause for live collection scope
-        (
-            '            where = filters\n'
-            '            if group_id is not None:\n'
-            '                group_clause = {"group_id": int(group_id)}\n'
-            '                where = {"$and": [filters, group_clause]} if filters else group_clause',
-            '            where = filters\n'
-            '            if group_id is not None:\n'
-            '                group_clause = {"group_id": int(group_id)}\n'
-            '                where = {"$and": [filters, group_clause]} if filters else group_clause\n'
-            '            # [scoped patch] live collection scope via item_key from local DB\n'
-            '            if collection_key is not None:\n'
-            '                target_keys = self._resolve_collection_item_keys(str(collection_key))\n'
-            '                if target_keys:\n'
-            '                    coll_clause = {"item_key": target_keys[0]} if len(target_keys) == 1 else {"item_key": {"$in": target_keys}}\n'
-            '                else:\n'
-            '                    coll_clause = {"item_key": "__EMPTY_OR_NONEXISTENT_COLLECTION__"}\n'
-            '                where = {"$and": [where, coll_clause]} if where else coll_clause',
-        ),
-    ], "semantic_search.py")
-else:
-    errors.append("semantic_search.py not found")
+# 3. Public MCP tool argument, description, call-through, and visible scope.
+if "tools/search.py" in work:
+    name = "tools/search.py"
+    if "collection: optional — scope to a Zotero collection" not in work[name]:
+        replace_once(
+            name,
+            "        \"zotero_list_libraries). search_all_libraries: search every indexed \"\n",
+            "        \"zotero_list_libraries). collection: optional — scope to a Zotero collection \"\n"
+            "        \"key (preferred) or exact name, including all subcollections; find keys \"\n"
+            "        \"with zotero_search_collections. search_all_libraries: search every indexed \"\n",
+            "tool description",
+        )
 
-# --- 3. tools/search.py ----------------------------------------------------
-ts = pkg / "tools" / "search.py"
-if ts.exists():
-    _apply(ts, [
-        # 3a. tool description
-        (
-            '        "library_id: optional — restrict results to one library. 0 or "\n'
-            '        "\'user\' for your personal library, or a group\'s numeric groupID "\n'
-            '        "(see zotero_list_libraries). Omit to search all indexed libraries. "',
-            '        "library_id: optional — restrict results to one library. 0 or "\n'
-            '        "\'user\' for your personal library, or a group\'s numeric groupID "\n'
-            '        "(see zotero_list_libraries). Omit to search all indexed libraries. "\n'
-            '        "collection: optional collection key OR collection name to scope results to that "\n'
-            '        "collection and its subcollections. Find keys with "\n'
-            '        "zotero_search_collections. "',
-        ),
-        # 3b. signature
-        (
-            'def semantic_search(\n'
-            '    query: str,\n'
-            '    limit: int = 10,\n'
-            '    filters: dict[str, str] | str | None = None,\n'
-            '    library_id: int | str | None = None,\n'
-            '    *,\n'
-            '    ctx: Context\n'
-            ') -> str:',
-            'def semantic_search(\n'
-            '    query: str,\n'
-            '    limit: int = 10,\n'
-            '    filters: dict[str, str] | str | None = None,\n'
-            '    library_id: int | str | None = None,\n'
-            '    collection: str | None = None,\n'
-            '    *,\n'
-            '    ctx: Context\n'
-            ') -> str:',
-        ),
-        # 3c. docstring
-        (
-            '        library_id: Optional library scope — 0/"user" for the personal library, a\n'
-            '            groupID for a group library, or None (default) to search every\n'
-            '            indexed library.\n',
-            '        library_id: Optional library scope — 0/"user" for the personal library, a\n'
-            '            groupID for a group library, or None (default) to search every\n'
-            '            indexed library.\n'
-            '        collection: Optional collection key or collection name to scope results (subcollections\n'
-            '            included). Find keys with zotero_search_collections.\n',
-        ),
-        # 3d. call site
-        (
-            '        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)',
-            '        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id, collection_key=collection)  # [scoped patch]',
-        ),
-    ], "tools/search.py")
-else:
-    errors.append("tools/search.py not found")
+    if "    collection: str | None = None," not in work[name]:
+        replace_once(
+            name,
+            "    library_id: int | str | None = None,\n"
+            "    search_all_libraries: bool = False,",
+            "    library_id: int | str | None = None,\n"
+            "    collection: str | None = None,\n"
+            "    search_all_libraries: bool = False,",
+            "tool signature",
+        )
+
+    if "        collection: Optional collection key" not in work[name]:
+        replace_once(
+            name,
+            "        library_id: Optional library scope — 0/\"user\" for the personal library\n"
+            "            or a groupID for a group library. Defaults to the active library.\n",
+            "        library_id: Optional library scope — 0/\"user\" for the personal library\n"
+            "            or a groupID for a group library. Defaults to the active library.\n"
+            "        collection: Optional collection key (preferred) or exact name. The\n"
+            "            collection and all subcollections are searched using live SQLite\n"
+            "            membership; no re-embedding is required after item moves.\n",
+            "tool docstring",
+        )
+
+    if "collection_key=collection" not in work[name]:
+        replace_once(
+            name,
+            "        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)",
+            "        results = search.search(\n"
+            "            query=query, limit=limit, filters=filters, group_id=group_id,\n"
+            "            collection_key=collection,  # [scoped patch]\n"
+            "        )",
+            "tool call",
+        )
+
+    if "*Collection scope:" not in work[name]:
+        replace_once(
+            name,
+            "        if search_all_libraries:\n"
+            "            output.append(\"*Scope: all indexed libraries.*\")\n"
+            "            output.append(\"\")\n"
+            "        output.append(f\"Found {len(search_results)} similar items:\")",
+            "        if search_all_libraries:\n"
+            "            output.append(\"*Scope: all indexed libraries.*\")\n"
+            "            output.append(\"\")\n"
+            "        if collection:\n"
+            "            output.append(f\"*Collection scope: `{collection}` (subcollections included).*\")\n"
+            "            output.append(\"\")\n"
+            "        output.append(f\"Found {len(search_results)} similar items:\")",
+            "scope display",
+        )
 
 if errors:
     print("mismatch")
-    for e in errors:
-        print(f"  - {e}", file=sys.stderr)
+    for error in errors:
+        print(f"  - {error}", file=sys.stderr)
     sys.exit(1)
+
+changed = [name for name in work if work[name] != original[name]]
+for name in changed:
+    path = paths[name]
+    tmp = path.with_name(path.name + ".scoped-patch.tmp")
+    tmp.write_text(work[name], encoding="utf-8")
+    os.replace(tmp, path)
 
 print("applied" if changed else "already")
