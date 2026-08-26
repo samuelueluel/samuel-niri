@@ -7,9 +7,12 @@ Maintains an in-memory NetworkX directed graph for fast topological queries:
 - Methodological Lineage (Ancestor / Descendant chains)
 - Connected Papers (Bibliographic Coupling / Co-Citation overlap)
 
-Zero LLM indexing cost, zero hallucinated edges, instant local rebuilds.
+Unmatched DOI references are retained as explicitly labeled external-reference
+nodes for expanded/open-world graph views. Graph rebuilds do not touch semantic
+embeddings.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +23,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import networkx as nx
+
+from .reference_parser import iter_all_reference_entries, reference_dois
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +39,126 @@ _STOPWORDS = {
     "study", "analysis", "empirical", "model", "models", "approach",
 }
 
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}[a-z]?\b", re.IGNORECASE)
+_EXTERNAL_NODE_TYPE = "external_reference"
+_MAX_METADATA_MATCH_LENGTH = 1200
+_MAX_METADATA_MATCH_YEARS = 3
+_LIBRARY_NODE_TYPE = "zotero_item"
+_VALID_SCOPES = {
+    "collection",
+    "library",
+    "collection-expanded",
+    "library-expanded",
+}
+
+
+def _normalize_doi(value: str) -> str:
+    """Return a conservative canonical DOI suitable for exact matching."""
+    doi = (value or "").strip().lower()
+    doi = re.sub(r"^(?:https?://)?(?:dx\.)?doi\.org/", "", doi)
+    doi = re.sub(r"^doi:\s*", "", doi)
+    return doi.rstrip(".,;:)]}>")
+
+
+def _normalize_reference(value: str) -> str:
+    """Collapse OCR whitespace and list markers for stable reference IDs."""
+    ref = re.sub(r"^\s*(?:\[\d+\]|\d+\.)\s*", "", value or "")
+    return re.sub(r"\s+", " ", ref).strip(" \t\r\n")
+
+
+def _external_key(kind: str, value: str) -> str:
+    """Create a stable, non-Zotero graph key for an external reference."""
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+    return f"ext:{kind}:{digest}"
+
+
+def _reference_context(text: str, start: int, end: int, limit: int = 800) -> str:
+    """Return a bounded local bibliography context around a matched DOI."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    context = _normalize_reference(text[line_start:line_end])
+    if 20 <= len(context) <= limit:
+        return context
+
+    window_start = max(0, start - limit // 2)
+    window_end = min(len(text), end + limit // 2)
+    return _normalize_reference(text[window_start:window_end])[:limit]
+
+
+def _reference_contains_citekey(
+    reference_text: str,
+    citekey: str,
+) -> bool:
+    return bool(
+        re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(citekey)}(?![A-Za-z0-9])",
+            reference_text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _metadata_match_allowed(reference_text: str, split_method: str = "") -> bool:
+    """Reject broad/collapsed entries before title-based resolution."""
+    if split_method == "whole-section":
+        return False
+    if len(reference_text) > _MAX_METADATA_MATCH_LENGTH:
+        return False
+    years = {match.group(0)[:4] for match in _YEAR_RE.finditer(reference_text)}
+    return len(years) <= _MAX_METADATA_MATCH_YEARS
+
+
+def _match_library_targets(
+    reference_text: str,
+    src_key: str,
+    by_doi: dict[str, str],
+    by_citekey: dict[str, str],
+    by_title_words: list[tuple[set[str], str, str, list[str], str]],
+) -> set[str]:
+    """Match one conservative reference entry against library metadata."""
+    ref_lower = reference_text.lower()
+    ref_tokens = set(re.findall(r"[a-z0-9]+", ref_lower))
+    ref_years = {match.group(0)[:4] for match in _YEAR_RE.finditer(reference_text)}
+    matches: set[str] = set()
+
+    for doi, target_key in by_doi.items():
+        if target_key != src_key and doi in ref_lower:
+            matches.add(target_key)
+
+    for citekey, target_key in by_citekey.items():
+        if target_key != src_key and _reference_contains_citekey(reference_text, citekey):
+            matches.add(target_key)
+
+    for words, target_key, _title, target_creators, target_year in by_title_words:
+        if target_key == src_key or not target_year or target_year not in ref_years:
+            continue
+        matching_words = words & ref_tokens
+        required_words = min(3, len(words))
+        if (
+            len(matching_words) >= required_words
+            and len(matching_words) >= len(words) * 0.7
+        ):
+            author_match = (
+                any(creator in ref_tokens for creator in target_creators)
+                if target_creators
+                else False
+            )
+            if author_match:
+                matches.add(target_key)
+
+    return matches
+
+
+def _external_title(raw_reference: str, fallback: str) -> str:
+    """Return a bounded display label while retaining the raw reference separately."""
+    label = _normalize_reference(raw_reference)
+    if len(label) > 240:
+        label = label[:237].rstrip() + "..."
+    return label or fallback
+
 
 @dataclass
 class GraphNode:
@@ -44,6 +169,10 @@ class GraphNode:
     citekey: str
     doi: str
     collections: list[str]
+    node_type: str = _LIBRARY_NODE_TYPE
+    external_id: str = ""
+    raw_reference: str = ""
+    confidence: float = 1.0
 
 
 class CitationGraph:
@@ -51,7 +180,10 @@ class CitationGraph:
 
     def __init__(self, db_path: Optional[Path | str] = None):
         self.db_path = Path(db_path) if db_path else DEFAULT_GRAPH_DB_PATH
-        self.graph = nx.DiGraph()
+        # A source/target pair can legitimately have both a citation and a
+        # coauthor relation. Keep both in memory; citation subgraphs below
+        # collapse only the relation-specific view.
+        self.graph = nx.MultiDiGraph()
         self._loaded = False
 
     # -- Building -------------------------------------------------------------
@@ -82,6 +214,7 @@ class CitationGraph:
             (SELECT value FROM itemDataValues JOIN itemData ON itemData.valueID = itemDataValues.valueID JOIN fields ON fields.fieldID = itemData.fieldID WHERE itemData.itemID = i.itemID AND fields.fieldName = 'date') as date,
             (SELECT value FROM itemDataValues JOIN itemData ON itemData.valueID = itemDataValues.valueID JOIN fields ON fields.fieldID = itemData.fieldID WHERE itemData.itemID = i.itemID AND fields.fieldName = 'extra') as extra,
             (SELECT value FROM itemDataValues JOIN itemData ON itemData.valueID = itemDataValues.valueID JOIN fields ON fields.fieldID = itemData.fieldID WHERE itemData.itemID = i.itemID AND fields.fieldName = 'DOI') as doi,
+            (SELECT typeName FROM itemTypes WHERE itemTypeID = i.itemTypeID) as item_type,
             (SELECT GROUP_CONCAT(CASE WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL THEN c.lastName || ', ' || c.firstName WHEN c.lastName IS NOT NULL THEN c.lastName ELSE c.firstName END, '; ')
              FROM itemCreators ic
              JOIN creators c ON ic.creatorID = c.creatorID
@@ -108,16 +241,18 @@ class CitationGraph:
         conn.close()
 
         nodes: dict[str, GraphNode] = {}
+        source_item_types: dict[str, str] = {}
         by_title_words: list[tuple[set[str], str, str, list[str], str]] = []
         by_doi: dict[str, str] = {}
         by_citekey: dict[str, str] = {}
 
         for r in rows:
             key = r["key"]
+            source_item_types[key] = (r["item_type"] or "unknown").strip() or "unknown"
             title = (r["title"] or "").strip()
             creators = (r["creators"] or "").strip()
             extra = (r["extra"] or "").strip()
-            doi = (r["doi"] or "").strip().lower()
+            doi = _normalize_doi(r["doi"] or "")
             date_str = (r["date"] or "").strip()
 
             # Year resolution
@@ -130,8 +265,17 @@ class CitationGraph:
             citekey = ""
             m_ck = re.search(r"Citation Key:\s*([^\s\n]+)", extra, re.IGNORECASE)
             if m_ck:
-                citekey = m_ck.group(1).strip()
-                by_citekey[citekey.lower()] = key
+                candidate_citekey = m_ck.group(1).strip().strip(".,;")
+                # Zotero Extra sometimes contains labels such as ``Report``
+                # or the next ``DOI:`` field after a malformed citation-key
+                # line. Only retain key-like values with a year/digit token.
+                if (
+                    candidate_citekey
+                    and not candidate_citekey.endswith(":")
+                    and re.search(r"\d", candidate_citekey)
+                ):
+                    citekey = candidate_citekey
+                    by_citekey[citekey.lower()] = key
 
             if doi:
                 by_doi[doi] = key
@@ -164,50 +308,315 @@ class CitationGraph:
                 collections=cols,
             )
 
-        # 2. Parse sidecar bibliographies for citation edges
+        # 2. Parse sidecar bibliographies entry by entry. Exact DOI matches
+        # remain deterministic; citekey/title matches are retained with an
+        # explicit method and confidence; unresolved and ambiguous entries are
+        # persisted as audit evidence but do not become graph edges.
         edges: set[tuple[str, str, str, float]] = set()
+        reference_evidence: list[tuple[str, str, str, int, str, str, float]] = []
+        reference_audit: list[tuple[str, str, int, str, str, str, float, str, str, str, str, float, str]] = []
+        reference_sidecars = 0
+        reference_sections = 0
+        reference_entries = 0
+        orphan_reference_sidecars = 0
+        orphan_reference_entries = 0
+        reference_entries_with_doi = 0
+        resolved_reference_entries = 0
+        external_reference_entries = 0
+        ambiguous_reference_entries = 0
+        unresolved_reference_entries = 0
+        reference_split_methods: dict[str, int] = defaultdict(int)
+        reference_entries_by_item_type: dict[str, int] = defaultdict(int)
 
         if sc_dir.exists():
-            for sc_path in sc_dir.glob("*.md"):
+            for sc_path in sorted(sc_dir.glob("*.md")):
                 src_key = sc_path.stem
-                if src_key not in nodes:
-                    continue
 
                 try:
-                    text = sc_path.read_text(encoding="utf-8")
+                    text = sc_path.read_text(encoding="utf-8", errors="ignore")
                 except Exception:
                     continue
 
-                ref_match = re.search(r"#+\s+References[\s\S]*?(?=\n#\s+[A-Z]|\Z)", text, re.IGNORECASE)
-                if not ref_match:
+                entry_records = list(iter_all_reference_entries(text))
+                if not entry_records:
                     continue
+                section_count = len({section.section_index for section, _entry in entry_records})
+                if src_key not in nodes:
+                    orphan_reference_sidecars += 1
+                    orphan_reference_entries += len(entry_records)
+                    continue
+                reference_sidecars += 1
+                reference_sections += section_count
+                source_item_type = source_item_types.get(src_key, "unknown")
 
-                ref_text = ref_match.group(0).lower()
+                for reference_section, entry in entry_records:
+                    raw_reference = entry.raw_text
+                    entry_index = entry.index
+                    reference_entries += 1
+                    reference_entries_by_item_type[source_item_type] += 1
+                    reference_split_methods[entry.split_method] += 1
+                    dois = reference_dois(raw_reference)
+                    if dois:
+                        reference_entries_with_doi += 1
 
-                # Check DOI matches in references
-                for d, target_key in by_doi.items():
-                    if target_key != src_key and d in ref_text:
-                        edges.add((src_key, target_key, "cites", 1.0))
+                    target_keys: set[str] = set()
+                    target_types: set[str] = set()
+                    match_methods: set[str] = set()
+                    match_confidences: list[float] = []
+                    ambiguous = False
+                    self_reference = False
+                    external = False
+                    metadata_match_allowed = _metadata_match_allowed(
+                        raw_reference,
+                        entry.split_method,
+                    )
 
-                # Check Citekey matches
-                for ck, target_key in by_citekey.items():
-                    if target_key != src_key and ck in ref_text:
-                        edges.add((src_key, target_key, "cites", 1.0))
-
-                # Check Title + Author matches
-                for words, target_key, target_title, target_creators, target_year in by_title_words:
-                    if target_key == src_key:
-                        continue
-
-                    matching_words = [w for w in words if w in ref_text]
-                    if len(matching_words) >= 3 and len(matching_words) >= len(words) * 0.7:
-                        author_match = (
-                            any(c in ref_text for c in target_creators)
-                            if target_creators
-                            else True
-                        )
-                        if author_match:
+                    # Resolve every DOI in the entry independently. The normal
+                    # case is one DOI; multiple DOI strings are retained as
+                    # multiple evidence rows while sharing the parsed ordinal.
+                    seen_entry_dois: set[str] = set()
+                    for doi_match in _DOI_RE.finditer(raw_reference):
+                        doi = _normalize_doi(doi_match.group(0))
+                        if not doi or doi in seen_entry_dois:
+                            continue
+                        seen_entry_dois.add(doi)
+                        target_key = by_doi.get(doi)
+                        if target_key and target_key != src_key:
+                            target_keys.add(target_key)
+                            target_types.add(_LIBRARY_NODE_TYPE)
+                            match_methods.add("doi")
+                            match_confidences.append(0.99)
                             edges.add((src_key, target_key, "cites", 1.0))
+                            reference_evidence.append(
+                                (
+                                    src_key,
+                                    target_key,
+                                    str(sc_path),
+                                    entry_index,
+                                    raw_reference,
+                                    "doi",
+                                    0.99,
+                                )
+                            )
+                            continue
+                        if doi in by_doi:
+                            # The reference repeats the DOI of its own source
+                            # item (common in AEA ``Dataset`` records and
+                            # textbook sidecars). Do not manufacture an
+                            # external node merely because self-edges are
+                            # suppressed. Preserve the audit evidence without
+                            # adding a graph edge.
+                            self_reference = True
+                            match_methods.add("self_reference")
+                            reference_evidence.append(
+                                (
+                                    src_key,
+                                    "",
+                                    str(sc_path),
+                                    entry_index,
+                                    raw_reference,
+                                    "self_reference",
+                                    0.0,
+                                )
+                            )
+                            continue
+
+                        # A DOI absent from the library can still belong to a
+                        # library item whose DOI field is missing. Only accept
+                        # this fallback when the entry has one unambiguous
+                        # library match; ambiguous candidates remain audit-only.
+                        candidates = (
+                            _match_library_targets(
+                                raw_reference,
+                                src_key,
+                                by_doi,
+                                by_citekey,
+                                by_title_words,
+                            )
+                            if metadata_match_allowed
+                            else set()
+                        )
+                        if len(candidates) == 1:
+                            resolved_key = next(iter(candidates))
+                            target_keys.add(resolved_key)
+                            target_types.add(_LIBRARY_NODE_TYPE)
+                            match_methods.add("doi+title_author_year")
+                            match_confidences.append(min(0.85, entry.confidence))
+                            edges.add((src_key, resolved_key, "cites", 1.0))
+                            reference_evidence.append(
+                                (
+                                    src_key,
+                                    resolved_key,
+                                    str(sc_path),
+                                    entry_index,
+                                    raw_reference,
+                                    "doi+title_author_year",
+                                    min(0.85, entry.confidence),
+                                )
+                            )
+                        elif len(candidates) > 1:
+                            ambiguous = True
+                        else:
+                            doi_context = _reference_context(
+                                raw_reference, doi_match.start(), doi_match.end()
+                            )
+                            external_key = _external_key("doi", doi)
+                            year_match = re.search(r"\b(?:19|20)\d{2}\b", doi_context)
+                            nodes.setdefault(
+                                external_key,
+                                GraphNode(
+                                    item_key=external_key,
+                                    title=_external_title(doi_context, f"DOI {doi}"),
+                                    creators="",
+                                    year=year_match.group(0) if year_match else "",
+                                    citekey="",
+                                    doi=doi,
+                                    collections=[],
+                                    node_type=_EXTERNAL_NODE_TYPE,
+                                    external_id=f"doi:{doi}",
+                                    raw_reference=doi_context,
+                                    confidence=0.95,
+                                ),
+                            )
+                            target_keys.add(external_key)
+                            target_types.add(_EXTERNAL_NODE_TYPE)
+                            match_methods.add("doi")
+                            match_confidences.append(0.95)
+                            external = True
+                            edges.add((src_key, external_key, "cites", 1.0))
+                            reference_evidence.append(
+                                (
+                                    src_key,
+                                    external_key,
+                                    str(sc_path),
+                                    entry_index,
+                                    raw_reference,
+                                    "doi",
+                                    0.95,
+                                )
+                            )
+
+                    if not dois:
+                        candidates = set()
+                        # Broad/collapsed entries are retained for audit and
+                        # retrieval, but are never title-matched into graph
+                        # edges. DOI identity above remains safe.
+                        if metadata_match_allowed:
+                            candidates = _match_library_targets(
+                                raw_reference,
+                                src_key,
+                                by_doi,
+                                by_citekey,
+                                by_title_words,
+                            )
+                        if len(candidates) == 1:
+                            resolved_key = next(iter(candidates))
+                            method = (
+                                "citekey"
+                                if any(
+                                    target_key == resolved_key
+                                    and _reference_contains_citekey(raw_reference, citekey)
+                                    for citekey, target_key in by_citekey.items()
+                                )
+                                else "title_author_year"
+                            )
+                            confidence = min(0.90, entry.confidence)
+                            target_keys.add(resolved_key)
+                            target_types.add(_LIBRARY_NODE_TYPE)
+                            match_methods.add(method)
+                            match_confidences.append(confidence)
+                            edges.add((src_key, resolved_key, "cites", 1.0))
+                            reference_evidence.append(
+                                (
+                                    src_key,
+                                    resolved_key,
+                                    str(sc_path),
+                                    entry_index,
+                                    raw_reference,
+                                    method,
+                                    confidence,
+                                )
+                            )
+                        elif len(candidates) > 1:
+                            ambiguous = True
+
+                    if ambiguous and not target_keys:
+                        match_methods.add("ambiguous_title_author_year")
+                        match_confidences.append(0.40)
+                        reference_evidence.append(
+                            (
+                                src_key,
+                                "",
+                                str(sc_path),
+                                entry_index,
+                                raw_reference,
+                                "ambiguous_title_author_year",
+                                0.40,
+                            )
+                        )
+                    elif not target_keys:
+                        if not self_reference:
+                            match_methods.add(
+                                "unresolved_complex_entry"
+                                if not metadata_match_allowed
+                                else "unresolved"
+                            )
+                            reference_evidence.append(
+                                (
+                                    src_key,
+                                    "",
+                                    str(sc_path),
+                                    entry_index,
+                                    raw_reference,
+                                    "unresolved",
+                                    0.0,
+                                )
+                            )
+
+                    if target_keys and external and any(
+                        target_type == _LIBRARY_NODE_TYPE for target_type in target_types
+                    ):
+                        target_status = "mixed"
+                    elif target_keys and external:
+                        target_status = "external_reference"
+                    elif target_keys:
+                        target_status = "resolved"
+                    elif ambiguous:
+                        target_status = "ambiguous"
+                    else:
+                        target_status = "unresolved"
+
+                    if target_status == "resolved":
+                        resolved_reference_entries += 1
+                    elif target_status == "external_reference":
+                        external_reference_entries += 1
+                    elif target_status == "mixed":
+                        resolved_reference_entries += 1
+                        external_reference_entries += 1
+                    elif target_status == "ambiguous":
+                        ambiguous_reference_entries += 1
+                    else:
+                        unresolved_reference_entries += 1
+
+                    match_method = "+".join(sorted(match_methods))
+                    resolution_confidence = max(match_confidences, default=0.0)
+                    reference_audit.append(
+                        (
+                            src_key,
+                            str(sc_path),
+                            entry_index,
+                            raw_reference,
+                            reference_section.heading,
+                            entry.split_method,
+                            entry.confidence,
+                            ",".join(dois),
+                            json.dumps(sorted(target_keys)),
+                            target_status,
+                            match_method,
+                            resolution_confidence,
+                            source_item_type,
+                        )
+                    )
 
         # 3. Add co-authorship and shared-collection edges
         author_papers = defaultdict(list)
@@ -231,6 +640,8 @@ class CitationGraph:
         db_conn = sqlite3.connect(self.db_path)
         db_cur = db_conn.cursor()
 
+        db_cur.execute("DROP TABLE IF EXISTS reference_audit")
+        db_cur.execute("DROP TABLE IF EXISTS reference_evidence")
         db_cur.execute("DROP TABLE IF EXISTS nodes")
         db_cur.execute("DROP TABLE IF EXISTS edges")
 
@@ -242,7 +653,11 @@ class CitationGraph:
             year TEXT,
             citekey TEXT,
             doi TEXT,
-            collections TEXT
+            collections TEXT,
+            node_type TEXT NOT NULL DEFAULT 'zotero_item',
+            external_id TEXT,
+            raw_reference TEXT,
+            confidence REAL NOT NULL DEFAULT 1.0
         )
         """)
 
@@ -256,9 +671,46 @@ class CitationGraph:
         )
         """)
 
+        db_cur.execute("""
+        CREATE TABLE reference_evidence (
+            source_key TEXT,
+            target_key TEXT,
+            source_path TEXT,
+            reference_index INTEGER,
+            raw_reference TEXT,
+            match_method TEXT,
+            confidence REAL,
+            PRIMARY KEY (source_key, target_key, source_path, reference_index)
+        )
+        """)
+
+        db_cur.execute("""
+        CREATE TABLE reference_audit (
+            source_key TEXT,
+            source_path TEXT,
+            reference_index INTEGER,
+            raw_reference TEXT,
+            section_heading TEXT,
+            split_method TEXT,
+            parse_confidence REAL,
+            doi TEXT,
+            target_keys TEXT,
+            target_status TEXT,
+            match_method TEXT,
+            confidence REAL,
+            source_item_type TEXT,
+            PRIMARY KEY (source_key, source_path, reference_index)
+        )
+        """)
+
         for node in nodes.values():
             db_cur.execute(
-                "INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO nodes (
+                    item_key, title, creators, year, citekey, doi, collections,
+                    node_type, external_id, raw_reference, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     node.item_key,
                     node.title,
@@ -267,15 +719,35 @@ class CitationGraph:
                     node.citekey,
                     node.doi,
                     json.dumps(node.collections),
+                    node.node_type,
+                    node.external_id,
+                    node.raw_reference,
+                    node.confidence,
                 ),
             )
 
         for src, tgt, rel, w in edges:
             db_cur.execute("INSERT OR IGNORE INTO edges VALUES (?, ?, ?, ?)", (src, tgt, rel, w))
 
+        for evidence in dict.fromkeys(reference_evidence):
+            db_cur.execute(
+                "INSERT OR IGNORE INTO reference_evidence VALUES (?, ?, ?, ?, ?, ?, ?)",
+                evidence,
+            )
+
+        for audit_record in dict.fromkeys(reference_audit):
+            db_cur.execute(
+                "INSERT OR IGNORE INTO reference_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                audit_record,
+            )
+
         db_cur.execute("CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(source_key)")
         db_cur.execute("CREATE INDEX IF NOT EXISTS idx_edges_tgt ON edges(target_key)")
         db_conn.commit()
+        db_cur.execute("SELECT COUNT(*) FROM reference_evidence")
+        persisted_reference_evidence = int(db_cur.fetchone()[0])
+        db_cur.execute("SELECT COUNT(*) FROM reference_audit")
+        persisted_reference_audit = int(db_cur.fetchone()[0])
         db_conn.close()
 
         # Refresh in-memory graph
@@ -283,7 +755,35 @@ class CitationGraph:
 
         stats = {
             "nodes": len(nodes),
+            "library_nodes": len([n for n in nodes.values() if n.node_type == _LIBRARY_NODE_TYPE]),
+            "external_nodes": len([n for n in nodes.values() if n.node_type == _EXTERNAL_NODE_TYPE]),
             "directed_citations": len([e for e in edges if e[2] == "cites"]),
+            "resolved_citations": len([
+                e for e in edges
+                if e[2] == "cites"
+                and nodes.get(e[1]) is not None
+                and nodes[e[1]].node_type == _LIBRARY_NODE_TYPE
+            ]),
+            "external_citations": len([
+                e for e in edges
+                if e[2] == "cites"
+                and nodes.get(e[1]) is not None
+                and nodes[e[1]].node_type == _EXTERNAL_NODE_TYPE
+            ]),
+            "reference_evidence": persisted_reference_evidence,
+            "reference_audit": persisted_reference_audit,
+            "reference_sidecars": reference_sidecars,
+            "reference_sections": reference_sections,
+            "orphan_reference_sidecars": orphan_reference_sidecars,
+            "orphan_reference_entries": orphan_reference_entries,
+            "reference_entries": reference_entries,
+            "reference_entries_with_doi": reference_entries_with_doi,
+            "resolved_reference_entries": resolved_reference_entries,
+            "external_reference_entries": external_reference_entries,
+            "ambiguous_reference_entries": ambiguous_reference_entries,
+            "unresolved_reference_entries": unresolved_reference_entries,
+            "reference_split_methods": dict(reference_split_methods),
+            "reference_entries_by_item_type": dict(reference_entries_by_item_type),
             "total_edges": len(edges),
             "db_path": str(self.db_path),
         }
@@ -304,6 +804,7 @@ class CitationGraph:
         cur.execute("SELECT * FROM nodes")
         for r in cur.fetchall():
             cols = json.loads(r["collections"]) if r["collections"] else []
+            keys = set(r.keys())
             self.graph.add_node(
                 r["item_key"],
                 title=r["title"] or "",
@@ -312,6 +813,10 @@ class CitationGraph:
                 citekey=r["citekey"] or "",
                 doi=r["doi"] or "",
                 collections=cols,
+                node_type=r["node_type"] if "node_type" in keys else _LIBRARY_NODE_TYPE,
+                external_id=r["external_id"] if "external_id" in keys else "",
+                raw_reference=r["raw_reference"] if "raw_reference" in keys else "",
+                confidence=float(r["confidence"] or 1.0) if "confidence" in keys else 1.0,
             )
 
         cur.execute("SELECT * FROM edges")
@@ -327,124 +832,253 @@ class CitationGraph:
         self._loaded = True
         return True
 
-    def get_collection_hubs(self, collection_key: str = "", top_n: int = 5) -> list[dict[str, Any]]:
-        """Find the foundational papers cited across a collection (or library)."""
+    @staticmethod
+    def _is_library_node(data: dict[str, Any]) -> bool:
+        """Return whether a node represents a resolved Zotero item."""
+        return data.get("node_type", _LIBRARY_NODE_TYPE) == _LIBRARY_NODE_TYPE
+
+    @staticmethod
+    def _normalize_scope(scope: str = "library", collection_key: str = "") -> str:
+        """Normalize public scope names while preserving legacy defaults."""
+        value = (scope or "library").strip().lower()
+        aliases = {
+            "within-library": "library",
+            "library-only": "library",
+            "strict": "collection",
+        }
+        value = aliases.get(value, value)
+        if value == "expanded":
+            value = "collection-expanded" if collection_key else "library-expanded"
+        if value not in _VALID_SCOPES:
+            allowed = ", ".join(sorted(_VALID_SCOPES))
+            raise ValueError(f"Unknown graph scope {scope!r}; choose one of: {allowed}")
+        if value in {"collection", "collection-expanded"} and not collection_key:
+            raise ValueError(f"Graph scope {value!r} requires collection_key")
+        return value
+
+    def _scope_edge_allowed(
+        self,
+        source_key: str,
+        target_key: str,
+        scope: str,
+        collection_key: str = "",
+    ) -> bool:
+        """Apply source/target filters for a citation-graph view."""
+        source = self.graph.nodes.get(source_key, {})
+        target = self.graph.nodes.get(target_key, {})
+        if not self._is_library_node(source):
+            return False
+        if scope == "library":
+            return self._is_library_node(target)
+        if scope == "collection":
+            return (
+                self._is_library_node(target)
+                and collection_key in source.get("collections", [])
+                and collection_key in target.get("collections", [])
+            )
+        if scope == "collection-expanded":
+            return collection_key in source.get("collections", [])
+        if scope == "library-expanded":
+            return True
+        return False
+
+    def _citation_subgraph(self, scope: str, collection_key: str = "") -> nx.DiGraph:
+        """Return the citation-only graph restricted to a public scope."""
+        citation_graph = nx.DiGraph()
+        citation_graph.add_nodes_from(self.graph.nodes(data=True))
+        citation_graph.add_edges_from(
+            [
+                (u, v)
+                for u, v, data in self.graph.edges(data=True)
+                if data.get("relation") == "cites"
+                and self._scope_edge_allowed(u, v, scope, collection_key)
+            ]
+        )
+        return citation_graph
+
+    def _format_node(self, key: str) -> dict[str, Any]:
+        data = self.graph.nodes.get(key, {})
+        return {
+            "item_key": key,
+            "title": data.get("title", ""),
+            "creators": data.get("creators", ""),
+            "year": data.get("year", ""),
+            "citekey": data.get("citekey", ""),
+            "node_type": data.get("node_type", _LIBRARY_NODE_TYPE),
+            "external_id": data.get("external_id", ""),
+            "raw_reference": data.get("raw_reference", ""),
+            "confidence": data.get("confidence", 1.0),
+        }
+
+    def get_collection_hubs(
+        self,
+        collection_key: str = "",
+        top_n: int = 5,
+        scope: str = "library",
+    ) -> list[dict[str, Any]]:
+        """Find hub nodes under an explicit collection/library graph scope.
+
+        Legacy behavior is preserved for the default ``library`` scope: when a
+        collection key is supplied, candidates are collection items but their
+        inward citations may originate anywhere among resolved library items.
+        ``collection`` restricts both ends to the collection, while
+        ``collection-expanded`` allows external-reference targets cited by
+        collection items.
+        """
         if not self._loaded and not self.load():
             return []
 
-        # Filter nodes
-        if collection_key:
-            scoped_nodes = [
-                n for n, d in self.graph.nodes(data=True)
-                if collection_key in d.get("collections", [])
-            ]
-        else:
-            scoped_nodes = list(self.graph.nodes())
+        scope = self._normalize_scope(scope, collection_key)
+        resolved = {
+            key for key, data in self.graph.nodes(data=True)
+            if self._is_library_node(data)
+        }
+        collection_nodes = {
+            key for key, data in self.graph.nodes(data=True)
+            if self._is_library_node(data)
+            and collection_key in data.get("collections", [])
+        }
 
-        if not scoped_nodes:
+        if scope == "collection":
+            source_keys = collection_nodes
+            target_keys = collection_nodes
+        elif scope == "library":
+            source_keys = resolved
+            target_keys = collection_nodes if collection_key else resolved
+        elif scope == "collection-expanded":
+            source_keys = collection_nodes
+            target_keys = set(self.graph.nodes())
+        else:  # library-expanded
+            source_keys = resolved
+            target_keys = set(self.graph.nodes())
+
+        if not target_keys:
             return []
 
-        # Citation in-degree (how many papers in the library cite this paper)
-        citation_edges = [
-            (u, v) for u, v, d in self.graph.edges(data=True) if d.get("relation") == "cites"
+        citation_graph = self._citation_subgraph(scope, collection_key)
+        # Explicitly restrict candidates to the requested target universe. This
+        # keeps external nodes out of all legacy/library-only responses.
+        in_degrees = [
+            (key, citation_graph.in_degree(key)) for key in target_keys
         ]
-        G_cit = nx.DiGraph()
-        G_cit.add_nodes_from(self.graph.nodes(data=True))
-        G_cit.add_edges_from(citation_edges)
-
-        in_degrees = G_cit.in_degree(scoped_nodes)
-        sorted_hubs = sorted(in_degrees, key=lambda x: x[1], reverse=True)[:top_n]
+        if scope.endswith("-expanded"):
+            # Expanded hub discovery should return works actually cited by the
+            # selected source set, not unrelated zero-degree library nodes.
+            in_degrees = [pair for pair in in_degrees if pair[1] > 0]
+        sorted_hubs = sorted(in_degrees, key=lambda pair: (-pair[1], pair[0]))[:top_n]
 
         results = []
-        for key, deg in sorted_hubs:
+        for key, degree in sorted_hubs:
             data = self.graph.nodes[key]
             results.append({
-                "item_key": key,
-                "title": data.get("title", ""),
-                "creators": data.get("creators", ""),
-                "year": data.get("year", ""),
-                "citekey": data.get("citekey", ""),
-                "inward_citations": deg,
+                **self._format_node(key),
+                "inward_citations": degree,
+                "scope": scope,
+                "source_node_count": len(source_keys),
             })
         return results
 
-    def get_paper_lineage(self, item_key: str, depth: int = 1) -> dict[str, Any]:
-        """Return direct citation ancestors (cites) and descendants (cited by)."""
+    def get_paper_lineage(
+        self,
+        item_key: str,
+        depth: int = 1,
+        scope: str = "library",
+        collection_key: str = "",
+    ) -> dict[str, Any]:
+        """Return direct citation ancestors and descendants under a scope."""
         if not self._loaded and not self.load():
             return {"error": "Graph not loaded"}
 
         if item_key not in self.graph:
             return {"error": f"Item {item_key} not found in graph"}
 
-        cit_sub = nx.DiGraph([
-            (u, v) for u, v, d in self.graph.edges(data=True) if d.get("relation") == "cites"
-        ])
+        scope = self._normalize_scope(scope, collection_key)
+        cit_sub = self._citation_subgraph(scope, collection_key)
 
-        # Ancestors: papers that item_key cites (successors in directed graph)
+        # ``depth`` remains part of the public API; this first expanded view
+        # preserves the established direct-neighbor behavior.
         ancestors = list(cit_sub.successors(item_key)) if item_key in cit_sub else []
-        # Descendants: papers that cite item_key (predecessors in directed graph)
         descendants = list(cit_sub.predecessors(item_key)) if item_key in cit_sub else []
 
-        def _format_node(k):
-            d = self.graph.nodes.get(k, {})
-            return {
-                "item_key": k,
-                "title": d.get("title", ""),
-                "creators": d.get("creators", ""),
-                "year": d.get("year", ""),
-                "citekey": d.get("citekey", ""),
-            }
-
         return {
-            "target_paper": _format_node(item_key),
-            "cites": [_format_node(k) for k in ancestors],
-            "cited_by": [_format_node(k) for k in descendants],
+            "target_paper": self._format_node(item_key),
+            "cites": [self._format_node(key) for key in ancestors],
+            "cited_by": [self._format_node(key) for key in descendants],
+            "scope": scope,
+            "depth": depth,
         }
 
-    def find_connected_papers(self, item_key: str, top_n: int = 5) -> list[dict[str, Any]]:
-        """Find structurally similar papers via bibliographic coupling (shared citations)."""
+    def find_connected_papers(
+        self,
+        item_key: str,
+        top_n: int = 5,
+        scope: str = "library",
+        collection_key: str = "",
+    ) -> list[dict[str, Any]]:
+        """Find bibliographically coupled resolved papers under a scope."""
         if not self._loaded and not self.load():
             return []
 
         if item_key not in self.graph:
             return []
 
-        cit_sub = nx.DiGraph([
-            (u, v) for u, v, d in self.graph.edges(data=True) if d.get("relation") == "cites"
-        ])
+        scope = self._normalize_scope(scope, collection_key)
+        resolved = {
+            key for key, data in self.graph.nodes(data=True)
+            if self._is_library_node(data)
+        }
+        collection_nodes = {
+            key for key, data in self.graph.nodes(data=True)
+            if self._is_library_node(data)
+            and collection_key in data.get("collections", [])
+        }
+        source_keys = collection_nodes if scope in {"collection", "collection-expanded"} else resolved
+        if item_key not in source_keys:
+            return []
 
-        target_cites = set(cit_sub.successors(item_key)) if item_key in cit_sub else set()
+        target_keys = (
+            collection_nodes
+            if scope == "collection"
+            else resolved
+            if scope == "library"
+            else set(self.graph.nodes())
+        )
+        cit_sub = self._citation_subgraph(scope, collection_key)
+        target_cites = (
+            set(cit_sub.successors(item_key)).intersection(target_keys)
+            if item_key in cit_sub
+            else set()
+        )
         if not target_cites:
             return []
 
         scores = []
-        for other_key in self.graph.nodes():
+        for other_key in sorted(source_keys):
             if other_key == item_key:
                 continue
-
-            other_cites = set(cit_sub.successors(other_key)) if other_key in cit_sub else set()
+            other_cites = (
+                set(cit_sub.successors(other_key)).intersection(target_keys)
+                if other_key in cit_sub
+                else set()
+            )
             if not other_cites:
                 continue
-
             shared = target_cites.intersection(other_cites)
             if shared:
-                jaccard = len(shared) / len(target_cites.union(other_cites))
-                scores.append((other_key, jaccard, list(shared)))
+                union = target_cites.union(other_cites)
+                scores.append((other_key, len(shared) / len(union), shared))
 
-        scores.sort(key=lambda x: x[1], reverse=True)
+        scores.sort(key=lambda row: (-row[1], row[0]))
         results = []
-        for k, score, shared in scores[:top_n]:
-            d = self.graph.nodes[k]
-            shared_titles = [
-                self.graph.nodes.get(s, {}).get("title", s) for s in shared
-            ]
+        for key, score, shared in scores[:top_n]:
             results.append({
-                "item_key": k,
-                "title": d.get("title", ""),
-                "creators": d.get("creators", ""),
-                "year": d.get("year", ""),
+                **self._format_node(key),
                 "coupling_score": round(score, 3),
                 "shared_citations_count": len(shared),
-                "shared_citations": shared_titles[:3],
+                "shared_citations": [
+                    self.graph.nodes.get(shared_key, {}).get("title", shared_key)
+                    for shared_key in sorted(shared)[:3]
+                ],
+                "scope": scope,
             })
         return results

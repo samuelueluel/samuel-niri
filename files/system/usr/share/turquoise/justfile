@@ -701,6 +701,27 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply the bibliography/reference-only BM25 patch (idempotent).
+    # Parses local MinerU sidecars into a separate per-entry BM25 reference index;
+    # no embedding calls or changes to the ordinary content index. Marker:
+    # [reference patch]. See Zotero-MCP.md and Zotero-Open-World-Citation-Graph.md.
+    echo -e "\033[36m  Re-applying zotero-mcp reference-index patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZREFPATCH=/usr/share/turquoise/zotero-mcp-reference-patch.py
+    [[ -f "$ZREFPATCH" ]] || ZREFPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-reference-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping reference-index patch.\033[0m"
+    elif [[ ! -f "$ZREFPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-reference-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZREFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mReference-index patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: reference-index patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mReference-index patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     # zotero-mcp-server: re-apply the Qwen3-Embedding query-instruct patch (idempotent).
     # Prepends `Instruct: <task>\nQuery: <query>` on the QUERY side only in
     # OpenAIEmbeddingFunction.embed_query (documents stay raw via __call__);
@@ -1442,88 +1463,6 @@ halo-llm-gpu:
     echo "    opencode-rebuild                         # (re)build the container image"
     echo "    opencode-safe-1 [dir]                    # writable dir + read-only home"
     echo "    opencode-safe-2 [dir]                    # writable dir only (no home access)"
-
-# Open WebUI — local AI chat frontend (proper LaTeX/markdown rendering, conversation
-# history, RAG) pointed at the ramalama iGPU server on :8080. Runs as a Podman container
-# managed by systemd via Quadlet, listening on :3000. Auth is on; first browser visit
-# creates the admin account. LAN access also needs the firewall port (printed at the end).
-# Idempotent — re-running just ensures the unit + image + service are in place.
-# See: ~/Dropbox/.../Local LLMs/Strix Halo LLM Guide.md §2.H (clients)
-halo-llm-webui:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(cat /usr/share/turquoise/image-id 2>/dev/null)" != "turquoise-halo" ]]; then
-        echo -e "\033[31mThis recipe is for the turquoise-halo image only.\033[0m"; exit 1
-    fi
-    pass() { echo -e "  \033[32m✓\033[0m $*"; }
-    info() { echo -e "  \033[34m→\033[0m $*"; }
-    fail() { echo -e "  \033[31m✗\033[0m $*"; }
-
-    WEBUI_IMG=ghcr.io/open-webui/open-webui:main
-    QUADLET="$HOME/.config/containers/systemd/open-webui.container"
-
-    # 1. Quadlet unit — systemd generates open-webui.service from this .container file.
-    # Network=host so the container reaches ramalama on localhost:8080; PORT=3000 avoids the
-    # :8080 collision. Bound to all interfaces (LAN); WEBUI_AUTH=True gates it with a login.
-    echo -e "\n\033[34m=== 1/3 Quadlet unit ===\033[0m"
-    mkdir -p "$(dirname "$QUADLET")"
-    printf '%s\n' \
-        '[Unit]' \
-        'Description=Open WebUI (local AI chat frontend → ramalama :8080)' \
-        'After=network-online.target' \
-        'Wants=network-online.target' \
-        '' \
-        '[Container]' \
-        'ContainerName=open-webui' \
-        "Image=$WEBUI_IMG" \
-        'Network=host' \
-        'Environment=PORT=3000' \
-        'Environment=OPENAI_API_BASE_URL=http://localhost:8080/v1' \
-        'Environment=OPENAI_API_KEY=dummy' \
-        'Environment=ENABLE_OLLAMA_API=False' \
-        'Environment=WEBUI_AUTH=True' \
-        'Environment=WEBUI_NAME=ZBook Local AI' \
-        'Volume=open-webui:/app/backend/data' \
-        'AutoUpdate=registry' \
-        '' \
-        '[Service]' \
-        'Restart=always' \
-        'TimeoutStartSec=900' \
-        '' \
-        '[Install]' \
-        'WantedBy=default.target' \
-        > "$QUADLET"
-    pass "Wrote $QUADLET"
-
-    # 2. Image
-    echo -e "\n\033[34m=== 2/3 Open WebUI image ===\033[0m"
-    if podman image exists "$WEBUI_IMG"; then
-        pass "Image already present."
-    else
-        info "Pulling $WEBUI_IMG (~4 GB)..."
-        podman pull "$WEBUI_IMG"
-        pass "Pulled."
-    fi
-
-    # 3. Service
-    echo -e "\n\033[34m=== 3/3 open-webui.service ===\033[0m"
-    systemctl --user daemon-reload
-    systemctl --user start open-webui.service
-    for i in $(seq 1 30); do curl -sf http://localhost:3000/health >/dev/null 2>&1 && break; sleep 3; done
-    if systemctl --user is-active --quiet open-webui.service && curl -sf http://localhost:3000/health >/dev/null 2>&1; then
-        pass "Running and healthy on :3000"
-    else
-        fail "Not healthy yet — check: journalctl --user -u open-webui.service -n 40"
-    fi
-
-    echo ""
-    echo -e "\033[32mOpen WebUI ready.\033[0m"
-    echo "  Local:  http://localhost:3000"
-    echo "  LAN:    http://$(ip -4 addr show scope global | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1):3000"
-    echo ""
-    echo "  LAN access also needs (one-time, sudo):"
-    echo "    sudo firewall-cmd --add-port=3000/tcp --permanent && sudo firewall-cmd --reload"
-    echo "    loginctl enable-linger $USER      # start at boot without an active login"
 
 # Set up SearXNG as a local web search backend for Open WebUI.
 # SearXNG is a self-hosted meta search engine that provides Open WebUI's agentic

@@ -228,12 +228,14 @@ def _apply(path: Path, edits: list[tuple[str, str]], name: str) -> None:
 
 
 # --- 0. sparse_index.py -----------------------------------------------------
-if not (pkg / "sparse_index.py").exists():
-    if src_sparse.exists():
-        shutil.copy2(src_sparse, pkg / "sparse_index.py")
+# Keep the copied pure-stdlib index in sync when its implementation changes.
+dst_sparse = pkg / "sparse_index.py"
+if src_sparse.exists():
+    if not dst_sparse.exists() or dst_sparse.read_bytes() != src_sparse.read_bytes():
+        shutil.copy2(src_sparse, dst_sparse)
         changed = True
-    else:
-        errors.append("sparse_index.py source (zotero-mcp-sparse.py) not found next to this script")
+else:
+    errors.append("sparse_index.py source (zotero-mcp-sparse.py) not found next to this script")
 
 # --- 1. chroma_client.py ----------------------------------------------------
 cc = pkg / "chroma_client.py"
@@ -277,8 +279,125 @@ else:
     errors.append("chroma_client.py not found")
 
 # --- 2. semantic_search.py --------------------------------------------------
+def _patch_current_semantic_search(path: Path) -> None:
+    """Patch the post-3.4.7 layout when the legacy anchors no longer match.
+
+    The upstream release moved the cheap config readers out of
+    ``semantic_search.py`` and added a streaming update pipeline.  The old
+    patch's first anchor included the removed MinerU import, so it aborted
+    before adding the hybrid-search state even though the retrieval-hygiene
+    patch was subsequently applied.  Keep this fallback small and atomic; the
+    legacy block below remains the path for older package layouts.
+    """
+    global changed
+    if not path.exists():
+        return
+    src = path.read_text(encoding="utf-8")
+    if MARKER in src:
+        return
+    # This fallback is only for the current layout.  Older releases are handled
+    # by the original anchor set below.
+    if 'from . import ast_chunker as _ast_chunker  # [ast chunker patch]' not in src:
+        return
+
+    hybrid_import_old = 'from . import ast_chunker as _ast_chunker  # [ast chunker patch]'
+    hybrid_import_new = hybrid_import_old + '\nfrom . import sparse_index as _sparse  # [sparse patch] hybrid BM25+RRF'
+    hybrid_config_anchor = 'from .utils import _paginate, format_creators, is_local_mode, suppress_stdout\n'
+    hybrid_config = '''\n\n_DEFAULT_HYBRID_CONFIG: dict[str, Any] = {
+    "enabled": False,
+    "bm25_k1": 1.5,
+    "bm25_b": 0.75,
+    "rrf_k": 60,
+    "index_path": "",
+}
+
+
+def load_hybrid_config(config_path: str | None) -> dict[str, Any]:
+    """[sparse patch] Read the semantic-search ``hybrid`` block from disk."""
+    config = dict(_DEFAULT_HYBRID_CONFIG)
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                file_config = json.load(f)
+            config.update(file_config.get("semantic_search", {}).get("hybrid", {}))
+        except Exception as e:
+            logger.warning(f"Error loading hybrid config: {e}")
+    return config
+'''
+    init_old = '        self._reranker_config = self._load_reranker_config()'
+    init_new = init_old + '\n        self._hybrid_config = self._load_hybrid_config()  # [sparse patch]'
+    loader_old = '''    def _load_reranker_config(self) -> dict[str, Any]:
+        """Load reranker configuration from file or use defaults."""
+        return load_reranker_config(self.config_path)'''
+    loader_new = loader_old + '''
+
+    def _load_hybrid_config(self) -> dict[str, Any]:
+        """[sparse patch] Load hybrid-search configuration from file or use defaults."""
+        return load_hybrid_config(self.config_path)'''
+    cache_anchor = '''        if cached is None:
+            cached = CrossEncoderReranker(model_name=model_name)
+            _RERANKER_CACHE[model_name] = cached
+        return cached
+
+
+class ZoteroSemanticSearch:'''
+    cache_new = cache_anchor.replace(
+        '\n\nclass ZoteroSemanticSearch:',
+        '\n\n' + CACHE_BLOCK + 'class ZoteroSemanticSearch:',
+        1,
+    )
+    search_anchor = '''    def search(self,
+               query: str,
+               limit: int = 10,
+               filters: dict[str, Any] | None = None,
+               group_id: int | None = None,
+               collection_key: str | None = None) -> dict[str, Any]:'''
+    search_new = HYBRID_HELPERS + search_anchor
+    dense_old = '''            # Perform semantic search
+            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)'''
+    dense_new = '''            # [sparse patch] hybrid search: dense + BM25 -> RRF -> candidates.
+            sparse_idx = self._get_sparse_index()
+            if sparse_idx is not None:
+                results = self._hybrid_search(query, fetch_limit, where, sparse_idx)
+            else:
+                results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)'''
+    build_anchor = '            # Update last update time, and promote last_sync_version on success.'
+    build_hook = '''            # [sparse patch] rebuild the BM25 sparse index after successful
+            # realtime indexing so newly added/changed chunks are searchable.
+            if self._hybrid_config.get("enabled", False):
+                try:
+                    _sparse_stats = self._build_sparse_index()
+                    logger.info(
+                        f"Rebuilt sparse index: {_sparse_stats['docs']} docs, "
+                        f"{_sparse_stats['terms']} terms, {_sparse_stats['ms']} ms"
+                    )
+                except Exception as _e:
+                    logger.warning(f"sparse index build failed: {_e}")
+
+'''
+    replacements = [
+        (hybrid_import_old, hybrid_import_new),
+        (hybrid_config_anchor, hybrid_config_anchor + hybrid_config),
+        (init_old, init_new),
+        (loader_old, loader_new),
+        (cache_anchor, cache_new),
+        (search_anchor, search_new),
+        (dense_old, dense_new),
+        (build_anchor, build_hook + build_anchor),
+    ]
+    work = src
+    for old, new in replacements:
+        if old not in work:
+            errors.append("semantic_search.py current-layout anchor missing")
+            return
+        work = work.replace(old, new, 1)
+    path.write_text(work, encoding="utf-8")
+    changed = True
+
+
 ss = pkg / "semantic_search.py"
 if ss.exists():
+    _patch_current_semantic_search(ss)
     _apply(ss, [
         # 2a. import
         (

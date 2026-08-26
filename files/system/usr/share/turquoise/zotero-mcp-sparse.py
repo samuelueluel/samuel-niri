@@ -157,8 +157,13 @@ class BM25Index:
         return self._n_docs > 0
 
     # -- query ---------------------------------------------------------------
-    def search(self, query: str, top_n: int = 50) -> list[tuple[str, float]]:
-        """Return (doc_id, bm25_score) pairs for the top_n documents, desc."""
+    def search(
+        self,
+        query: str,
+        top_n: int = 50,
+        allowed_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        """Return top BM25 documents, optionally restricted to ``allowed_ids``."""
         terms = [t for t in tokenize(query) if t in self._postings]
         if not terms or not self._n_docs:
             return []
@@ -171,6 +176,8 @@ class BM25Index:
         for t in terms:
             t_idf = idf[t]
             for doc_id, tf in self._postings[t].items():
+                if allowed_ids is not None and doc_id not in allowed_ids:
+                    continue
                 dl = self._doc_len.get(doc_id, 0)
                 denom = tf + self.k1 * (1.0 - self.b + self.b * dl / avgdl)
                 scores[doc_id] = scores.get(doc_id, 0.0) + t_idf * (tf * (self.k1 + 1.0)) / denom
