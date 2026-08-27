@@ -3,14 +3,15 @@
 
 Why: zotero semantic search extracts text-layer PDF text only, so equations
 arrive as garbled Unicode and tables as run-on text. This patch slots MinerU
-(magic-pdf) in BEFORE embedding: for every item being (re)embedded that has
-a PDF and no cached sidecar, MinerU parses it, the sidecar markdown becomes
-the embedded fulltext, and answer-time fulltext reads prefer the sidecar.
+(magic-pdf) in before embedding: for every item being (re)embedded that has a
+PDF and no cached sidecar, MinerU parses it, the sidecar Markdown becomes the
+embedded fulltext, and answer-time fulltext reads prefer the sidecar.
 
 Files (all in the zotero_mcp package dir passed as argv[1]):
 - mineru.py               copied from zotero-mcp-mineru.py next to this script
-- semantic_search.py      import + extraction-block hook
+- semantic_search.py      import + current extraction-batch hook
 - tools/retrieval.py      import + sidecar preference in get_item_fulltext
+- tools/search.py         embedder pre-check warning
 
 Marker comment: "[mineru patch]". Re-applied by sjust update; see
 General-Tooling §3.2.5 and MinerU-Setup.md.
@@ -64,93 +65,64 @@ if ss.exists():
             "from . import mineru as _mineru  # [mineru patch] auto-MinerU before embedding (see zotero-mcp-mineru-patch.py)",
         ),
         (
-            '                                    if chroma_date == item_date and stored_att_keys == att_keys:\n'
-            '                                        # Nothing changed since the failure — don\'t retry\n'
-            '                                        should_extract = False\n'
-            '                                        skipped_existing += 1\n'
-            '                                        _skipped_failed.append(display or f"item {it.key}")\n'
-            '                                    else:\n'
-            '                                        # Item or its attachments changed since last\n'
-            '                                        # failure (legacy records without attachment_keys\n'
-            '                                        # retry once, then converge) — retry\n'
-            '                                        updated_existing += 1\n'
-            '                                elif not chroma_has_fulltext and local_has_fulltext:\n'
-            '                                    # Document exists but lacks fulltext - we need to update it\n'
-            '                                    updated_existing += 1\n'
-            '                                elif _attachment_priority_changed(\n'
-            '                                    existing_metadata, priority_tag\n'
-            '                                ):\n'
-            '                                    # The stored text may have come from an\n'
-            '                                    # attachment the user has since deprioritized\n'
-            '                                    # — re-extract rather than serve a stale\n'
-            '                                    # PDF-derived embedding (#378).\n'
-            '                                    updated_existing += 1\n'
-            '                                else:\n'
-            '                                    should_extract = False\n'
-            '                                    skipped_existing += 1',
-            '                                    # [mineru patch] don\'t skip when MinerU could now extract what text-layer couldn\'t\n'
-            '                                    if (\n'
-            '                                        chroma_date == item_date\n'
-            '                                        and stored_att_keys == att_keys\n'
-            '                                        and not _mineru.is_parseable(it.key, reader)\n'
-            '                                    ):\n'
-            '                                        # Nothing changed since the failure — don\'t retry\n'
-            '                                        should_extract = False\n'
-            '                                        skipped_existing += 1\n'
-            '                                        _skipped_failed.append(display or f"item {it.key}")\n'
-            '                                    else:\n'
-            '                                        # Item or its attachments changed since last\n'
-            '                                        # failure (legacy records without attachment_keys\n'
-            '                                        # retry once, then converge) — retry\n'
-            '                                        updated_existing += 1\n'
-            '                                elif not chroma_has_fulltext and local_has_fulltext:\n'
-            '                                    # Document exists but lacks fulltext - we need to update it\n'
-            '                                    updated_existing += 1\n'
-            '                                elif _attachment_priority_changed(\n'
-            '                                    existing_metadata, priority_tag\n'
-            '                                ):\n'
-            '                                    # The stored text may have come from an\n'
-            '                                    # attachment the user has since deprioritized\n'
-            '                                    # — re-extract rather than serve a stale\n'
-            '                                    # PDF-derived embedding (#378).\n'
-            '                                    updated_existing += 1\n'
-            '                                elif _mineru.is_backfill_target(it.key, reader):\n'
-            '                                    # [mineru patch] backfill: item indexed with text-layer\n'
-            '                                    # text but no MinerU sidecar yet — re-extract with MinerU\n'
-            '                                    # (one-time per item; gated by mineru.backfill config)\n'
-            '                                    updated_existing += 1\n'
-            '                                else:\n'
-            '                                    should_extract = False\n'
-            '                                    skipped_existing += 1',
-        ),
-        (
-            '                        if should_extract:\n'
-            '                            # Extract fulltext if item doesn\'t have it yet\n'
-            '                            if not getattr(it, "fulltext", None):\n'
-            '                                text = reader.extract_fulltext_for_item(it.item_id)\n'
-            '                                if text:\n'
-            '                                    it.fulltext, it.fulltext_source = text\n'
-            '                                else:\n'
-            '                                    # Nothing readable — mark so the metadata\n'
-            '                                    # records that we did try.\n'
-            '                                    it._fulltext_attempted = True',
-            '                        if should_extract:\n'
-            '                            # Extract fulltext if item doesn\'t have it yet\n'
-            '                            if not getattr(it, "fulltext", None):\n'
-            '                                # [mineru patch] auto-MinerU: parse PDFs with MinerU before text-layer extraction\n'
-            '                                mineru_fulltext = _mineru.try_auto_parse(getattr(it, "key", ""), reader)\n'
-            '                                if mineru_fulltext:\n'
-            '                                    it.fulltext, it.fulltext_source = mineru_fulltext\n'
-            '                                else:\n'
-            '                                    text = reader.extract_fulltext_for_item(it.item_id)\n'
-            '                                    if text:\n'
-            '                                        it.fulltext, it.fulltext_source = text\n'
-            '                                    else:\n'
-            '                                        # Nothing readable — mark so the metadata\n'
-            '                                        # records that we did try.\n'
-            '                                        it._fulltext_attempted = True',
+            '''def _extract_fulltext_batch(reader, items):
+    """Yield ``(item_id, (text, source) | None)`` for every item in ``items``.
+
+    Prefers the reader's batch API, which parallelises across a process pool
+    when configured. Falls back to one call per item for readers that do not
+    provide it — the minimal doubles used in tests implement only
+    ``extract_fulltext_for_item(item_id)``, and they should not have to grow
+    a new method just because the real reader gained a faster path.
+    """
+    batch = getattr(reader, "extract_fulltext_for_items", None)
+    if batch is not None:
+        yield from batch(items)
+        return
+    for item_id, _item_key in items:
+        yield item_id, reader.extract_fulltext_for_item(item_id)
+''',
+            '''def _extract_fulltext_batch(reader, items):
+    """Yield ``(item_id, (text, source) | None)`` for every item in ``items``.
+
+    [mineru patch] Use cached MinerU sidecars when present and, when enabled,
+    parse PDFs before falling back to the normal text-layer extractor. The
+    unmodified batch path is retained when MinerU is disabled and no sidecar
+    exists, preserving the reader's process-pool extraction behavior.
+    """
+    items = list(items)
+    mineru_config = _mineru.load_mineru_config()
+    sidecars = [
+        (item_id, item_key, _mineru.read_sidecar(mineru_config, item_key))
+        for item_id, item_key in items
+    ]
+
+    # Keep the upstream batch extractor on the ordinary path. A cached sidecar
+    # or enabled auto-MinerU intentionally opts into the per-item path below.
+    if not mineru_config.get("enabled") and not any(
+        text is not None for _item_id, _item_key, text in sidecars
+    ):
+        batch = getattr(reader, "extract_fulltext_for_items", None)
+        if batch is not None:
+            yield from batch(items)
+            return
+        for item_id, _item_key in items:
+            yield item_id, reader.extract_fulltext_for_item(item_id)
+        return
+
+    for item_id, item_key, sidecar in sidecars:
+        if sidecar is not None:
+            yield item_id, (sidecar, "mineru-sidecar")
+            continue
+        mineru_fulltext = _mineru.try_auto_parse(item_key, reader)
+        if mineru_fulltext:
+            yield item_id, mineru_fulltext
+        else:
+            yield item_id, reader.extract_fulltext_for_item(item_id)
+''',
         ),
     ], "semantic_search.py")
+else:
+    errors.append("semantic_search.py not found")
 
 # --- 3. tools/retrieval.py -------------------------------------------------
 rv = pkg / "tools" / "retrieval.py"
@@ -179,6 +151,8 @@ if rv.exists():
             "                        extracted = reader.extract_fulltext_for_item(local_item.item_id)",
         ),
     ], "tools/retrieval.py")
+else:
+    errors.append("tools/retrieval.py not found")
 
 # --- 4. tools/search.py (embedder pre-check warning) -------------------------
 sc = pkg / "tools" / "search.py"
@@ -232,11 +206,11 @@ if sc.exists():
             '        return "\\n".join(output)',
         ),
     ], "tools/search.py")
+else:
+    errors.append("tools/search.py not found")
 
-if changed:
-    print("applied")
-elif errors:
+if errors:
     print("mismatch: " + "; ".join(errors))
     sys.exit(1)
-else:
-    print("already")
+
+print("applied" if changed else "already")

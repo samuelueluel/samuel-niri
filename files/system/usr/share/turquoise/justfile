@@ -225,6 +225,8 @@ uv:
 # Blanket-upgrade npm global packages (no pins — always latest).
 # Mirrors the brew pattern (brew update && brew upgrade). The npm set is small
 # enough to run blanket; see ~/.Npmfile for the running list used on new machines.
+# npm 12 removed the obsolete --latest flag. It also requires an explicit
+# allow-remote opt-in when reifying the Homebrew-managed global npm package.
 npm:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -233,7 +235,7 @@ npm:
         exit 0
     fi
     echo "Upgrading npm global packages..."
-    npm update -g --latest 2>/dev/null || echo -e "  \033[33m  ↳ npm update failed — check log\033[0m"
+    npm update -g --allow-remote=all || echo -e "  \033[33m  ↳ npm update failed — check log\033[0m"
 
 # Add Flathub, install flatpaks, apply permission overrides
 flatpaks:
