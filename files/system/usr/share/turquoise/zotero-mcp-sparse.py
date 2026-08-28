@@ -162,8 +162,14 @@ class BM25Index:
         query: str,
         top_n: int = 50,
         allowed_ids: set[str] | None = None,
+        allowed_item_keys: set[str] | None = None,
     ) -> list[tuple[str, float]]:
-        """Return top BM25 documents, optionally restricted to ``allowed_ids``."""
+        """Return top BM25 documents under optional id/item-key scopes.
+
+        ``allowed_item_keys`` applies to passage ids of the form
+        ``<parent_item_key>#<chunk_index>`` and keeps live Zotero tag,
+        collection, and source-group scopes exact on the sparse leg.
+        """
         terms = [t for t in tokenize(query) if t in self._postings]
         if not terms or not self._n_docs:
             return []
@@ -177,6 +183,11 @@ class BM25Index:
             t_idf = idf[t]
             for doc_id, tf in self._postings[t].items():
                 if allowed_ids is not None and doc_id not in allowed_ids:
+                    continue
+                if (
+                    allowed_item_keys is not None
+                    and doc_id.split("#", 1)[0] not in allowed_item_keys
+                ):
                     continue
                 dl = self._doc_len.get(doc_id, 0)
                 denom = tf + self.k1 * (1.0 - self.b + self.b * dl / avgdl)

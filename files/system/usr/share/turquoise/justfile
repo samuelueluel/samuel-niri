@@ -888,6 +888,50 @@ update:
         esac
     fi
 
+    # zotero-mcp-server: re-apply unified source-group and live tag filters.
+    # Native itemType remains canonical; source_group is a query-time mapping,
+    # tags are independent optional predicates, and both can scope dense + BM25
+    # via live parent item keys. No PDF, sidecar, or embedding data changes.
+    # Marker: [source filters patch]. See 02_Memories/RAG-tags.md.
+    echo -e "\033[36m  Re-applying zotero-mcp source-group/tag-filter patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZSFPATCH=/usr/share/turquoise/zotero-mcp-source-filters-patch.py
+    [[ -f "$ZSFPATCH" ]] || ZSFPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-source-filters-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping source-filter patch.\033[0m"
+    elif [[ ! -f "$ZSFPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-source-filters-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZSFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mSource-group/tag-filter patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: source-filter patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mSource-filter patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
+    # zotero-mcp-server: re-apply the strict exact-source identity resolver.
+    # This is a metadata-only tool separate from search_items' discovery
+    # cascade. It returns explicit exact/ambiguous/absent status and keeps
+    # related records in a separate field, preventing semantic neighbors from
+    # being mistaken for a named source. Marker: [exact resolver patch].
+    echo -e "\033[36m  Re-applying zotero-mcp strict exact-source resolver patch...\033[0m"
+    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
+    ZERPATCH=/usr/share/turquoise/zotero-mcp-exact-resolver-patch.py
+    [[ -f "$ZERPATCH" ]] || ZERPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-exact-resolver-patch.py"
+    if [[ -z "$ZMPKG" ]]; then
+        echo -e "  \033[33mzotero-mcp-server not installed — skipping exact-resolver patch.\033[0m"
+    elif [[ ! -f "$ZERPATCH" ]]; then
+        echo -e "  \033[33mzotero-mcp-exact-resolver-patch.py not found; review manually.\033[0m"
+    else
+        case "$(python3 "$ZERPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
+            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mExact-source resolver patch applied + zotero-mcp.service restarted.\033[0m" ;;
+            already) echo -e "  Already patched." ;;
+            mismatch*) echo -e "  \033[33mWARNING: exact-resolver patch pattern changed upstream; not applied — review manually.\033[0m" ;;
+            *) echo -e "  \033[33mExact-resolver patch failed; review manually.\033[0m" ;;
+        esac
+    fi
+
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
     if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
         echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
