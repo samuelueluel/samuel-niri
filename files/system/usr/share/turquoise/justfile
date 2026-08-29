@@ -966,9 +966,13 @@ update:
             cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
             cmake --build build --config Release -j$(nproc) --target llama-server llama-cli llama-bench
 
-            # Clean stale dynamic libraries from previous portable unpacks and install static binaries
-            rm -f /out/vulkan/bin/lib*.so*
-            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/
+            # Clean stale dynamic libraries from previous portable unpacks. Keep the
+            # Nathan binary separate from the dispatch wrapper so every update really
+            # replaces llama-server-real instead of compiling a binary and overwriting
+            # it with the wrapper below.
+            rm -f /out/vulkan/bin/lib*.so* /out/vulkan/bin/llama-server-real
+            cp -f build/bin/llama-server /out/vulkan/bin/llama-server-real
+            cp -f build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/
         ' || true
 
         echo -e "\033[36m  Compiling Laurent Vulkan Engine (LaurentZuijdwijk/llama.cpp - ROCmFP4 & Adaptive DFlash2)...\033[0m"
@@ -1032,6 +1036,44 @@ update:
             mv "$OUT" /out/rocm
         ' || true
 
+        echo -e "\033[36m  Compiling CIRU ROCm HIP engine (ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4 - Strix Halo gfx1151)...\033[0m"
+        podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.14.0-full bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            export PATH=/opt/rocm/bin:$PATH
+            apt-get update -qq && apt-get install -y -qq git cmake ninja-build build-essential libssl-dev
+
+            git clone --depth=1 https://github.com/ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4.git /tmp/ciru-src
+            cd /tmp/ciru-src
+            cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DGGML_HIP=ON \
+                -DAMDGPU_TARGETS=gfx1151 \
+                -DGGML_HIP_ROCWMMA_FATTN=ON
+            ninja -C build -j$(nproc) llama-server llama-cli llama-bench
+
+            OUT=/out/ciru.new
+            rm -rf "$OUT"
+            mkdir -p "$OUT/lib"
+            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench "$OUT/"
+            cp -Pf build/bin/*.so* "$OUT/lib/" 2>/dev/null || true
+            cp -aL /opt/rocm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
+            cp -aL /opt/rocm/llvm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
+            cp -a /opt/rocm/lib/rocblas "$OUT/lib/" 2>/dev/null || true
+
+            export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/llvm/lib:"$OUT/lib":$PWD/build/bin
+            declare -A seen=(); queue=("$OUT/llama-server" "$OUT/llama-cli" "$OUT/llama-bench" "$OUT/lib"/*.so*)
+            while (( ${#queue[@]} )); do
+                f="${queue[0]}"; queue=("${queue[@]:1}")
+                while read -r lib; do
+                    [ -f "$lib" ] || continue; [ "${seen[$lib]+1}" ] && continue
+                    seen[$lib]=1; cp -aL "$lib" "$OUT/lib/" 2>/dev/null || true; queue+=("$lib")
+                done < <(ldd "$f" 2>/dev/null | grep -oE "/[^ (]+" || true)
+            done
+            rm -rf /out/ciru
+            mv "$OUT" /out/ciru
+        ' || true
+
         echo -e "\033[36m  Syncing MoE/Dense dispatch wrapper (canonical: /usr/share/turquoise/llama-dispatch-wrapper.sh)...\033[0m"
         # lemond v10.8 launches /opt/lemonade/llama/vulkan/bin/llama-server or /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server for
         # llamacpp_backend=vulkan. All locations must hold this wrapper while Nathan real binary lives at llama-server-real.
@@ -1049,10 +1091,10 @@ update:
 
         podman restart lemonade || true
         sleep 3
-        if podman exec lemonade grep -q "force-rocm" /opt/lemonade/llama/llama-server 2>/dev/null; then
-            echo -e "\033[32m  Dispatch wrapper verified (Dual-engine ROCm/Vulkan routing intact).\033[0m"
+        if podman exec lemonade grep -q "force-rocm" /opt/lemonade/llama/llama-server 2>/dev/null && podman exec lemonade grep -q "force-ciru" /opt/lemonade/llama/llama-server 2>/dev/null; then
+            echo -e "\033[32m  Dispatch wrapper verified (Quad-engine Vulkan/Laurent/ROCm/CIRU routing intact).\033[0m"
         else
-            echo -e "\033[31m  WARNING: dispatch wrapper missing force-rocm patterns — verify routing!\033[0m"
+            echo -e "\033[31m  WARNING: dispatch wrapper missing force-rocm or force-ciru patterns — verify routing!\033[0m"
         fi
     fi
 
