@@ -905,8 +905,8 @@ update:
         case "$(python3 "$ZSFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
             applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mSource-group/tag-filter patch applied + zotero-mcp.service restarted.\033[0m" ;;
             already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: source-filter patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mSource-filter patch failed; review manually.\033[0m" ;;
+            mismatch*) echo -e "  \033[31mERROR: source-filter patch pattern changed upstream; update aborted — review manually.\033[0m"; exit 1 ;;
+            *) echo -e "  \033[31mSource-filter patch failed; update aborted — review manually.\033[0m"; exit 1 ;;
         esac
     fi
 
@@ -927,8 +927,8 @@ update:
         case "$(python3 "$ZERPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
             applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mExact-source resolver patch applied + zotero-mcp.service restarted.\033[0m" ;;
             already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: exact-resolver patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mExact-resolver patch failed; review manually.\033[0m" ;;
+            mismatch*) echo -e "  \033[31mERROR: exact-resolver patch pattern changed upstream; update aborted — review manually.\033[0m"; exit 1 ;;
+            *) echo -e "  \033[31mExact-resolver patch failed; update aborted — review manually.\033[0m"; exit 1 ;;
         esac
     fi
 
