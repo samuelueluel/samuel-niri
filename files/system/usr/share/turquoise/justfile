@@ -445,12 +445,10 @@ distroboxes:
       set -euo pipefail
       yay -S --noconfirm stremio-enhanced-bin rustdesk-bin ffmpeg gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
     '
-    distrobox enter --name arch-box -- bash -c '
-      set -euo pipefail
-      mkdir -p "$HOME/.config/stremio-enhanced/streamingserver"
-      wget -O "$HOME/.config/stremio-enhanced/streamingserver/server.js" \
-        "https://dl.strem.io/server/v4.20.17/desktop/server.js"
-    '
+    mkdir -p "$HOME/.config/stremio-enhanced/streamingserver"
+    stremio_ver=$(curl -sL https://raw.githubusercontent.com/Stremio/stremio-service/refs/heads/master/Cargo.toml | sed -n '/\[package\.metadata\.server\]/,/\[.*\]/p' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "v4.21.1")
+    wget -O "$HOME/.config/stremio-enhanced/streamingserver/server.js" "https://dl.strem.io/server/${stremio_ver}/desktop/server.js"
+    echo -n "$stremio_ver" > "$HOME/.config/stremio-enhanced/streamingserver/version.txt"
     distrobox enter --name arch-box -- distrobox-export --app stremio-enhanced
     distrobox enter --name arch-box -- distrobox-export --app rustdesk
     mkdir -p "$HOME/.config/systemd/user"
@@ -504,6 +502,19 @@ update:
     if command -v distrobox >/dev/null; then
         echo -e "\033[36m  \$ distrobox upgrade --all\033[0m"
         distrobox upgrade --all || true
+        if distrobox list 2>/dev/null | grep -q arch-box; then
+            echo -e "\033[36m  Syncing Stremio server.js for arch-box...\033[0m"
+            mkdir -p "$HOME/.config/stremio-enhanced/streamingserver"
+            stremio_ver=$(curl -sL https://raw.githubusercontent.com/Stremio/stremio-service/refs/heads/master/Cargo.toml | sed -n '/\[package\.metadata\.server\]/,/\[.*\]/p' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || true)
+            if [ -n "$stremio_ver" ]; then
+                current_stremio_ver=$(cat "$HOME/.config/stremio-enhanced/streamingserver/version.txt" 2>/dev/null || true)
+                if [ "$current_stremio_ver" != "$stremio_ver" ] || [ ! -f "$HOME/.config/stremio-enhanced/streamingserver/server.js" ]; then
+                    echo "  Updating Stremio server.js to $stremio_ver..."
+                    wget -q -O "$HOME/.config/stremio-enhanced/streamingserver/server.js" "https://dl.strem.io/server/${stremio_ver}/desktop/server.js" || true
+                    echo -n "$stremio_ver" > "$HOME/.config/stremio-enhanced/streamingserver/version.txt"
+                fi
+            fi
+        fi
     else
         echo -e "\033[31m  Distrobox not found, skipping.\033[0m"
     fi
