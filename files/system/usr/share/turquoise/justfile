@@ -208,7 +208,8 @@ pipx:
     done < "$PIPX_FILE"
 
 # Declaratively install/upgrade Python-based CLI and MCP tools from ~/.Uvfile
-# Uvfile format: <pkg>[extras] [--with <dep>] [--from <git-url>]  # optional comment
+# Uvfile format: shell-evaluated `uv tool install` arguments; quote requirements
+# containing spaces (for example, a PEP 508 direct Git reference).
 uv:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -594,342 +595,13 @@ update:
         "$HOME/.agents/mcp/searxng/venv/bin/pip" install --upgrade -q mcp requests 2>/dev/null || true
     fi
 
-    # zotero-mcp-server: upgrade handled by ~/.Uvfile (sjust uv above, keeps [semantic,pdf] extras
-    # + the linked-file fulltext patch re-application below). KEEP THE EXTRAS LIST IN SYNC with the
-    # "Tools that do NOT work" table in ~/.agents/skills/zotero/references/library-ops.md — that
-    # table is install-specific, so any change in ~/.Uvfile (or installing Better BibTeX) must
-    # update it in the same change, or docs will tell agents a working tool is dead.
-    ZMP=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -path "*zotero_mcp/tools/retrieval.py" 2>/dev/null | head -1)
-    ZPATCH=/usr/share/turquoise/zotero-mcp-patch.py
-    [[ -f "$ZPATCH" ]] || ZPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-patch.py"
-    if [[ -z "$ZMP" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping patch.\033[0m"
-    elif [[ ! -f "$ZPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZPATCH" "$ZMP" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mPatch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch) echo -e "  \033[33mWARNING: retrieval.py pattern changed upstream; patch not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mPatch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the auto-MinerU patch (idempotent).
-    # Slots MinerU (magic-pdf) in BEFORE embedding: every item being (re)embedded
-    # that has a PDF and no cached sidecar gets parsed, the sidecar markdown
-    # becomes the embedded fulltext, and answer-time fulltext reads prefer the
-    # sidecar. Marker comment: [mineru patch]. See General-Tooling §3.2.5.
-    echo -e "\033[36m  Re-applying zotero-mcp auto-MinerU patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZMPATCH=/usr/share/turquoise/zotero-mcp-mineru-patch.py
-    [[ -f "$ZMPATCH" ]] || ZMPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-mineru-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping mineru patch.\033[0m"
-    elif [[ ! -f "$ZMPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-mineru-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZMPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mMinerU patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: mineru patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mMinerU patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the HTTP reranker patch (idempotent).
-    # Adds HttpCrossEncoderReranker to semantic_search.py: reranking delegates to
-    # the local llama.cpp /v1/rerank endpoint (ramalama 'reranker' container, port
-    # 8083, bge-reranker-v2-m3 Q8_0, started with serve-reranker) instead of
-    # CPU-bound in-process sentence-transformers. Marker: [http reranker patch].
-    echo -e "\033[36m  Re-applying zotero-mcp HTTP reranker patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZRPATCH=/usr/share/turquoise/zotero-mcp-reranker-patch.py
-    [[ -f "$ZRPATCH" ]] || ZRPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-reranker-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping reranker patch.\033[0m"
-    elif [[ ! -f "$ZRPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-reranker-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZRPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mHTTP reranker patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: reranker patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mReranker patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the collection-scoped semantic search patch (idempotent).
-    # Adds a `collection` param to zotero_semantic_search. Each query resolves live
-    # SQLite membership (including subcollections) to item keys and applies the same
-    # DB-side scope to ChromaDB and BM25. Item moves need no re-embed or backfill.
-    # Marker: [scoped patch]. See Zotero-MCP.md and New-RAG-Setup.md.
-    echo -e "\033[36m  Re-applying zotero-mcp collection-scoped search patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZSPATCH=/usr/share/turquoise/zotero-mcp-scoped-patch.py
-    [[ -f "$ZSPATCH" ]] || ZSPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-scoped-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping scoped patch.\033[0m"
-    elif [[ ! -f "$ZSPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-scoped-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZSPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mCollection-scoped search patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: scoped patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mScoped patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the hybrid search (BM25 + RRF) patch (idempotent).
-    # Adds the sparse leg: Okapi BM25 index over the same ChromaDB chunks, fused
-    # with the dense ranking via Reciprocal Rank Fusion (k=60) before the
-    # cross-encoder reranker. Rebuilt automatically on each update-db. Marker:
-    # [sparse patch]. See Zotero-MCP.md and New-RAG-Setup.md.
-    echo -e "\033[36m  Re-applying zotero-mcp hybrid search patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZHPATCH=/usr/share/turquoise/zotero-mcp-sparse-patch.py
-    [[ -f "$ZHPATCH" ]] || ZHPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-sparse-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping hybrid patch.\033[0m"
-    elif [[ ! -f "$ZHPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-sparse-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZHPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mHybrid search patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: hybrid patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mHybrid patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the bibliography/reference-only BM25 patch (idempotent).
-    # Parses local MinerU sidecars into a separate per-entry BM25 reference index;
-    # no embedding calls or changes to the ordinary content index. Marker:
-    # [reference patch]. See Zotero-MCP.md and Zotero-Open-World-Citation-Graph.md.
-    echo -e "\033[36m  Re-applying zotero-mcp reference-index patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZREFPATCH=/usr/share/turquoise/zotero-mcp-reference-patch.py
-    [[ -f "$ZREFPATCH" ]] || ZREFPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-reference-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping reference-index patch.\033[0m"
-    elif [[ ! -f "$ZREFPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-reference-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZREFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mReference-index patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: reference-index patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mReference-index patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the Qwen3-Embedding query-instruct patch (idempotent).
-    # Prepends `Instruct: <task>\nQuery: <query>` on the QUERY side only in
-    # OpenAIEmbeddingFunction.embed_query (documents stay raw via __call__);
-    # Qwen3-Embedding official guidance: omitting it costs ~1-5% retrieval.
-    # Marker: [instruct patch]. See Zotero-MCP.md.
-    echo -e "\033[36m  Re-applying zotero-mcp query-instruct patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZIPATCH=/usr/share/turquoise/zotero-mcp-instruct-patch.py
-    [[ -f "$ZIPATCH" ]] || ZIPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-instruct-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping instruct patch.\033[0m"
-    elif [[ ! -f "$ZIPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-instruct-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZIPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mInstruct patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: instruct patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mInstruct patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the PDF-outline child-script patch (idempotent).
-    # zotero_get_pdf_outline extracts the TOC in a throwaway child whose stdout must
-    # be pure JSON; PyMuPDF>=1.26 prints a deprecation warning to STDOUT when importing
-    # the legacy `fitz` name, corrupting it ("unreadable outline data"). The patch makes
-    # the child import `pymupdf as fitz` instead (warning-free, API-identical).
-    # Marker: [toc patch]. This patch file itself lives in the turquoise repo like the others.
-    echo -e "\033[36m  Re-applying zotero-mcp PDF-outline child-script patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZTPATCH=/usr/share/turquoise/zotero-mcp-toc-patch.py
-    [[ -f "$ZTPATCH" ]] || ZTPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-toc-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping toc patch.\033[0m"
-    elif [[ ! -f "$ZTPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-toc-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZTPATCH" "$ZMPKG/tools/write.py" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mTOC patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: toc patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mTOC patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the Deterministic Contextual Retrieval patch (idempotent).
-    # Prepends a lean structural prefix ([Paper: <title> | Section: <breadcrumb>])
-    # to every chunk IN MEMORY before embedding/BM25 indexing, so regression
-    # models and proofs keep their paper/section identity in both indexes.
-    # Zero disk mutation of sidecars; sparse leg inherits via iter_documents().
-    # Marker: [contextual patch]. See New-RAG-Setup.md (Extension 1: DCR).
-    echo -e "\033[36m  Re-applying zotero-mcp Deterministic Contextual Retrieval patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZCPATCH=/usr/share/turquoise/zotero-mcp-contextual-patch.py
-    [[ -f "$ZCPATCH" ]] || ZCPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-contextual-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping contextual patch.\033[0m"
-    elif [[ ! -f "$ZCPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-contextual-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZCPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mContextual patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: contextual patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mContextual patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply retrieval hygiene + score provenance (idempotent).
-    # Zero re-embed; rebuild the fast BM25 index after a classifier change:
-    #  1. precise bibliography classifier (DCR Section leaf; no title false positives)
-    #  2. suppress bibliography chunks from dense + BM25 semantic RAG; use the
-    #     separate reference index/tool for DOI/title/citation queries
-    #  3. expose raw local reranker scores and apply the configured score floor
-    #  4. figure queries inject schema candidates and may boost ordering, while the
-    #     displayed confidence remains the unboosted raw reranker score
-    # Marker: [hybrid filter patch]. See Zotero-MCP.md and New-RAG-Setup.md.
-    echo -e "\033[36m  Re-applying zotero-mcp retrieval-hygiene filters patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZFPATCH=/usr/share/turquoise/zotero-mcp-hybrid-filter-patch.py
-    [[ -f "$ZFPATCH" ]] || ZFPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-hybrid-filter-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping hybrid-filter patch.\033[0m"
-    elif [[ ! -f "$ZFPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-hybrid-filter-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mRetrieval-hygiene filters patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: hybrid-filter patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mHybrid-filter patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the Bounded AST Chunker patch (idempotent).
-    # Replaces naive character slicing with AST-aware Markdown chunking:
-    # keeps tables, LaTeX display math, and figure schemas atomic up to 3,800 chars.
-    # Marker: [ast chunker patch]. See Dynamic-AST-Chunker.md and Zotero-MCP.md.
-    echo -e "\033[36m  Re-applying zotero-mcp Bounded AST Chunker patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZAPATCH=/usr/share/turquoise/zotero-mcp-ast-chunker-patch.py
-    [[ -f "$ZAPATCH" ]] || ZAPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-ast-chunker-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping ast chunker patch.\033[0m"
-    elif [[ ! -f "$ZAPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-ast-chunker-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZAPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mBounded AST Chunker patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: ast chunker patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mAST chunker patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the date-filter patch (idempotent).
-    # advanced_search date range ops (isAfter/isBefore/isGreaterThan/isLessThan)
-    # fell back to raw Python string comparison whenever float() could not parse
-    # BOTH sides — and Zotero's month-first display dates ("5/2018", "08/2024")
-    # never parse as floats. On a library where ~46% of dated items are
-    # month-first, every date-range query mis-ordered them in BOTH directions
-    # (isAfter "2020" returned papers from 1981, excluded a real 2024 paper),
-    # and no-date items vacuously matched isBefore. The patch adds a date-aware
-    # comparison layer to tools/search.py (_parse_date + _compare date branch)
-    # and fixes the `year` field extractor (date[:4] turned "5/2018" into
-    # "5/20"). Marker: [date patch]. See Zotero-MCP.md (Date filters).
-    echo -e "\033[36m  Re-applying zotero-mcp date-filter patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZDPATCH=/usr/share/turquoise/zotero-mcp-date-patch.py
-    [[ -f "$ZDPATCH" ]] || ZDPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-date-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping date patch.\033[0m"
-    elif [[ ! -f "$ZDPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-date-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZDPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mDate-filter patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: date patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mDate patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the Deterministic Citation Graph patch (idempotent).
-    # Builds an in-memory NetworkX directed graph over Zotero metadata and MinerU
-    # bibliography sidecars ([REF]) to provide collection hub detection, paper
-    # lineage tracking, and bibliographic coupling tools. Marker: [graph patch].
-    echo -e "\033[36m  Re-applying zotero-mcp Deterministic Citation Graph patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZGPATCH=/usr/share/turquoise/zotero-mcp-graph-patch.py
-    [[ -f "$ZGPATCH" ]] || ZGPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-graph-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping graph patch.\033[0m"
-    elif [[ ! -f "$ZGPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-graph-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZGPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mCitation graph patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[33mWARNING: graph patch pattern changed upstream; not applied — review manually.\033[0m" ;;
-            *) echo -e "  \033[33mGraph patch failed; review manually.\033[0m" ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply unified source-group and live tag filters.
-    # Native itemType remains canonical; source_group is a query-time mapping,
-    # tags are independent optional predicates, and both can scope dense + BM25
-    # via live parent item keys. No PDF, sidecar, or embedding data changes.
-    # Marker: [source filters patch]. See 02_Memories/RAG-tags.md.
-    echo -e "\033[36m  Re-applying zotero-mcp source-group/tag-filter patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZSFPATCH=/usr/share/turquoise/zotero-mcp-source-filters-patch.py
-    [[ -f "$ZSFPATCH" ]] || ZSFPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-source-filters-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping source-filter patch.\033[0m"
-    elif [[ ! -f "$ZSFPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-source-filters-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZSFPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mSource-group/tag-filter patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[31mERROR: source-filter patch pattern changed upstream; update aborted — review manually.\033[0m"; exit 1 ;;
-            *) echo -e "  \033[31mSource-filter patch failed; update aborted — review manually.\033[0m"; exit 1 ;;
-        esac
-    fi
-
-    # zotero-mcp-server: re-apply the strict exact-source identity resolver.
-    # This is a metadata-only tool separate from search_items' discovery
-    # cascade. It returns explicit exact/ambiguous/absent status and keeps
-    # related records in a separate field, preventing semantic neighbors from
-    # being mistaken for a named source. Marker: [exact resolver patch].
-    echo -e "\033[36m  Re-applying zotero-mcp strict exact-source resolver patch...\033[0m"
-    ZMPKG=$(find "$HOME/.local/share/uv/tools/zotero-mcp-server/lib" -type d -name zotero_mcp 2>/dev/null | head -1)
-    ZERPATCH=/usr/share/turquoise/zotero-mcp-exact-resolver-patch.py
-    [[ -f "$ZERPATCH" ]] || ZERPATCH="$HOME/turquoise/files/system/usr/share/turquoise/zotero-mcp-exact-resolver-patch.py"
-    if [[ -z "$ZMPKG" ]]; then
-        echo -e "  \033[33mzotero-mcp-server not installed — skipping exact-resolver patch.\033[0m"
-    elif [[ ! -f "$ZERPATCH" ]]; then
-        echo -e "  \033[33mzotero-mcp-exact-resolver-patch.py not found; review manually.\033[0m"
-    else
-        case "$(python3 "$ZERPATCH" "$ZMPKG" 2>/dev/null || echo error)" in
-            applied) systemctl --user restart zotero-mcp.service 2>/dev/null || true; echo -e "  \033[32mExact-source resolver patch applied + zotero-mcp.service restarted.\033[0m" ;;
-            already) echo -e "  Already patched." ;;
-            mismatch*) echo -e "  \033[31mERROR: exact-resolver patch pattern changed upstream; update aborted — review manually.\033[0m"; exit 1 ;;
-            *) echo -e "  \033[31mExact-resolver patch failed; update aborted — review manually.\033[0m"; exit 1 ;;
-        esac
+    # zotero-mcp-server is installed from Samuel's tested fork by ~/.Uvfile.
+    # The fork contains its own source-level enhancements; no runtime patch
+    # injection is needed here. Restart after sjust uv so the service picks up
+    # a newly installed fork release.
+    if [[ -x "{{HOME}}/.local/bin/zotero-mcp-server" ]]; then
+        systemctl --user restart zotero-mcp.service 2>/dev/null || true
+        echo -e "  \033[32mZotero MCP fork installed; service restarted.\033[0m"
     fi
 
     echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
@@ -989,13 +661,23 @@ update:
             fi
 
             export CC=gcc CXX=g++
-            git clone --depth=1 https://github.com/LaurentZuijdwijk/llama.cpp.git /tmp/laurent-src
+            # Qwen3.8-Flash-Next ROCmFP4 uses Laurent's qwen4exp/ROCmFPx
+            # branch, not the repository default branch. Keep the branch
+            # explicit so every sjust update rebuilds the correct backend.
+            LAURENT_BRANCH="vulkan/qwen4exp-rocmfpx"
+            git clone --branch "$LAURENT_BRANCH" --single-branch --depth=1 https://github.com/LaurentZuijdwijk/llama.cpp.git /tmp/laurent-src
             cd /tmp/laurent-src
+            test "$(git branch --show-current)" = "$LAURENT_BRANCH"
             cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
             cmake --build build --config Release -j$(nproc) --target llama-server llama-cli llama-bench
 
             rm -f /out/vulkan-laurent/bin/lib*.so*
             cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan-laurent/bin/
+            {
+                printf 'repo=https://github.com/LaurentZuijdwijk/llama.cpp.git\n'
+                printf 'ref=%s\n' "$LAURENT_BRANCH"
+                printf 'commit=%s\n' "$(git rev-parse HEAD)"
+            } > /out/vulkan-laurent/BUILD-INFO
         ' || true
             
         echo -e "\033[36m  Compiling ROCm HIP engine (Gaetan Puleo - Strix Halo gfx1151)...\033[0m"
@@ -1003,7 +685,7 @@ update:
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
             export PATH=/opt/rocm/bin:$PATH
-            apt-get update -qq && apt-get install -y -qq git cmake build-essential libssl-dev
+            apt-get update -qq && apt-get install -y -qq git cmake build-essential libssl-dev libvulkan-dev glslc spirv-headers glslang-tools
 
             git clone --depth=1 https://github.com/gaetan-puleo/llama-cpp-strix-halo.git /tmp/rocm-src
             cd /tmp/rocm-src
@@ -1091,10 +773,15 @@ update:
 
         podman restart lemonade || true
         sleep 3
-        if podman exec lemonade grep -q "force-rocm" /opt/lemonade/llama/llama-server 2>/dev/null && podman exec lemonade grep -q "force-ciru" /opt/lemonade/llama/llama-server 2>/dev/null; then
+        if podman exec lemonade grep -q "force-rocm" /opt/lemonade/llama/llama-server 2>/dev/null && podman exec lemonade grep -q "force-laurent" /opt/lemonade/llama/llama-server 2>/dev/null && podman exec lemonade grep -q "force-ciru" /opt/lemonade/llama/llama-server 2>/dev/null; then
             echo -e "\033[32m  Dispatch wrapper verified (Quad-engine Vulkan/Laurent/ROCm/CIRU routing intact).\033[0m"
         else
-            echo -e "\033[31m  WARNING: dispatch wrapper missing force-rocm or force-ciru patterns — verify routing!\033[0m"
+            echo -e "\033[31m  WARNING: dispatch wrapper missing a force-rocm, force-laurent, or force-ciru route — verify routing!\033[0m"
+        fi
+        if podman exec lemonade bash -c 'grep -a -q qwen4exp /opt/lemonade/llama/vulkan-laurent/bin/llama-server && grep -a -q ROCMFP4 /opt/lemonade/llama/vulkan-laurent/bin/llama-server' 2>/dev/null; then
+            echo -e "\033[32m  Laurent backend verified (qwen4exp + ROCmFP4 support present).\033[0m"
+        else
+            echo -e "\033[31m  WARNING: Laurent backend lacks qwen4exp/ROCmFP4 markers — the required branch may not be installed.\033[0m"
         fi
     fi
 
