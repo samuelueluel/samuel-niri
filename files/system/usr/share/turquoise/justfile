@@ -434,14 +434,14 @@ distroboxes:
     rm -rf "$HOME/.config/stremio-enhanced" 2>/dev/null || true
 
     distrobox create --name arch-box --image archlinux:latest --yes
-    distrobox enter --name arch-box -- bash -c '
+    distrobox enter --no-tty --name arch-box -- bash -c '
       set -euo pipefail
       sudo pacman -Syu --noconfirm
       sudo pacman -S --noconfirm base-devel git
       cd /tmp && rm -rf yay-bin
       git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm
     '
-    distrobox enter --name arch-box -- bash -c '
+    distrobox enter --no-tty --name arch-box -- bash -c '
       set -euo pipefail
       yay -S --noconfirm stremio-enhanced-bin rustdesk-bin ffmpeg gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
     '
@@ -449,8 +449,8 @@ distroboxes:
     stremio_ver=$(curl -sL https://raw.githubusercontent.com/Stremio/stremio-service/refs/heads/master/Cargo.toml | sed -n '/\[package\.metadata\.server\]/,/\[.*\]/p' | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "v4.21.1")
     wget -O "$HOME/.config/stremio-enhanced/streamingserver/server.js" "https://dl.strem.io/server/${stremio_ver}/desktop/server.js"
     echo -n "$stremio_ver" > "$HOME/.config/stremio-enhanced/streamingserver/version.txt"
-    distrobox enter --name arch-box -- distrobox-export --app stremio-enhanced
-    distrobox enter --name arch-box -- distrobox-export --app rustdesk
+    distrobox enter --no-tty --name arch-box -- distrobox-export --app stremio-enhanced
+    distrobox enter --no-tty --name arch-box -- distrobox-export --app rustdesk
     mkdir -p "$HOME/.config/systemd/user"
     printf '%s\n' \
       '[Unit]' \
@@ -458,7 +458,7 @@ distroboxes:
       'After=network.target' \
       '' \
       '[Service]' \
-      'ExecStart=distrobox enter --name arch-box -- rustdesk --service' \
+      'ExecStart=distrobox enter --no-tty --name arch-box -- rustdesk --service' \
       'Restart=on-failure' \
       '' \
       '[Install]' \
