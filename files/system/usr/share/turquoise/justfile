@@ -672,7 +672,7 @@ update:
             fi
 
             export CC=gcc CXX=g++
-            # Qwen3.8-Flash-Next ROCmFP4 uses Laurent's qwen4exp/ROCmFPx
+            # Qwen3.8-Flash-Next ROCmFP4 uses Laurent qwen4exp/ROCmFPx
             # branch, not the repository default branch. Keep the branch
             # explicit so every sjust update rebuilds the correct backend.
             LAURENT_BRANCH="vulkan/qwen4exp-rocmfpx"
@@ -685,9 +685,9 @@ update:
             rm -f /out/vulkan-laurent/bin/lib*.so*
             cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan-laurent/bin/
             {
-                printf 'repo=https://github.com/LaurentZuijdwijk/llama.cpp.git\n'
-                printf 'ref=%s\n' "$LAURENT_BRANCH"
-                printf 'commit=%s\n' "$(git rev-parse HEAD)"
+                printf "repo=https://github.com/LaurentZuijdwijk/llama.cpp.git\n"
+                printf "ref=%s\n" "$LAURENT_BRANCH"
+                printf "commit=%s\n" "$(git rev-parse HEAD)"
             } > /out/vulkan-laurent/BUILD-INFO
         ' || true
             
