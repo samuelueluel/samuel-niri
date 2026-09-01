@@ -1,0 +1,80 @@
+# Ubuntu 26.04 candidate runtime for the GPU-only Lemonade stack.
+# This intentionally tracks Lemonade v10.8.0 rather than main: an OS migration
+# must not silently become a Lemonade application upgrade.
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu@sha256:7c2884fd32770fc6c173b78e0dc2278a2851d89f5447919edbc45475ac55dd6a
+
+# ==============================================================
+# 1. Build stage — compile Lemonade v10.8.0 C++ binaries
+# ==============================================================
+FROM ${UBUNTU_IMAGE} AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    libssl-dev \
+    pkg-config \
+    libdrm-dev \
+    git \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /app
+WORKDIR /app
+
+RUN rm -rf build && \
+    cmake --preset default && \
+    cmake --build --preset default web-app
+
+# ============================================================
+# 2. Runtime stage — Ubuntu 26.04, GPU/Lemonade only
+# ============================================================
+FROM ${UBUNTU_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    libcurl4 \
+    curl \
+    libssl3 \
+    zlib1g \
+    libdrm2 \
+    vulkan-tools \
+    libvulkan1 \
+    unzip \
+    libgomp1 \
+    libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The NPU/FastFlowLM path is intentionally omitted. The NPU is disabled.
+
+WORKDIR /opt/lemonade
+RUN mkdir -p /run/lemonade && chmod 700 /run/lemonade
+ENV XDG_RUNTIME_DIR=/run/lemonade
+
+COPY --from=builder /app/build/lemond ./lemond
+COPY --from=builder /app/build/lemonade ./lemonade
+COPY --from=builder /app/build/resources ./resources
+
+RUN chmod +x ./lemond ./lemonade
+ENV PATH="/opt/lemonade:${PATH}"
+
+# Preserve the current v10.8 root/HOME/cache contract used by the deployed
+# container. The persistent recipe and engine volumes are supplied at runtime.
+RUN mkdir -p /opt/lemonade/llama/cpu \
+    /opt/lemonade/llama/vulkan \
+    /root/.cache/huggingface
+
+LABEL org.opencontainers.image.description="Ubuntu 26.04 GPU-only Lemonade v10.8.0 candidate"
+LABEL org.opencontainers.image.lemonade-version="10.8.0"
+LABEL org.opencontainers.image.npu="disabled"
+
+EXPOSE 13305
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:13305/live || exit 1
+
+CMD ["./lemond", "--host", "0.0.0.0"]

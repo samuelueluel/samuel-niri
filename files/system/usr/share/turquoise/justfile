@@ -468,6 +468,32 @@ distroboxes:
     systemctl --user enable --now rustdesk
     echo "arch-box done."
 
+# Build and validate an isolated Ubuntu 26.04 GPU/Lemonade candidate.
+# Use an explicit action: sjust llm-ubuntu26-candidate status|runtime|prepare|build|start|validate|all.
+# This never changes the production lemonade container or volumes.
+llm-ubuntu26-candidate action="status":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-candidate.sh"
+    [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-candidate.sh"
+    "$SCRIPT" "{{action}}"
+
+# Promote the already-validated candidate. This retains the Ubuntu 24 rollback container.
+llm-ubuntu26-promote:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-promote.sh"
+    [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-promote.sh"
+    "$SCRIPT"
+
+# Restore the retained Ubuntu 24 Lemonade container without deleting volumes.
+llm-ubuntu26-rollback:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-rollback.sh"
+    [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-rollback.sh"
+    "$SCRIPT"
+
 # System maintenance: health check, image upgrade, flatpaks, brew, distroboxes, firmware (not in setup)
 update:
     #!/usr/bin/env bash
@@ -623,177 +649,67 @@ update:
         echo -e "\033[31m  pi-safe Containerfile not found, skipping.\033[0m"
     fi
 
-    echo -e "\n\033[34m=== Updating Dual-Toolbox LLM Engines in Lemonade ===\033[0m"
+    echo -e "\n\033[34m=== Updating Ubuntu 26 GPU LLM Engines in Lemonade ===\033[0m"
     if podman inspect lemonade 2>/dev/null | grep -q 'lemonade'; then
-        echo -e "\033[36m  Compiling ROCm and Vulkan binaries from source (Ubuntu 24.04)...\033[0m"
-        podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.2.4-complete bash -c '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslc glslang-tools spirv-headers spirv-tools libssl-dev
+        ENGINE_SCRIPT="$HOME/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-build-engines.sh"
+        [[ -x "$ENGINE_SCRIPT" ]] || ENGINE_SCRIPT=/usr/share/turquoise/llm-ubuntu26-build-engines.sh
+        [[ -x "$ENGINE_SCRIPT" ]] || {
+            echo -e "\033[31m  Ubuntu 26 engine builder not found: $ENGINE_SCRIPT\033[0m"
+            exit 1
+        }
 
-            export PATH=/opt/rocm/bin:$PATH
+        # Refuse to replace active engine files while a model is loaded. The
+        # production container uses the candidate-generation volume after the
+        # Ubuntu 26 cutover; the old lemonade-llama volume remains rollback-only.
+        if ! curl -fsS --max-time 15 http://127.0.0.1:13305/api/v1/health | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status")=="ok" and d.get("model_loaded") is None and not d.get("all_models_loaded") else 1)'; then
+            echo -e "\033[31m  Lemonade is not clean/healthy or has a model loaded; refusing engine replacement.\033[0m"
+            exit 1
+        fi
 
-            echo "Syncing Vulkan RADV driver bundle..."
-            mkdir -p /tmp/vulkan-portable /out/vulkan/driver /out/vulkan/bin
-            curl -sL https://github.com/Nathanw1014/strix-halo-llamacpp/releases/latest/download/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /tmp/vulkan-portable --strip-components=1 || true
-            if [[ -d /tmp/vulkan-portable/driver ]]; then
-                cp -a /tmp/vulkan-portable/driver/* /out/vulkan/driver/
-            fi
+        echo -e "\033[36m  Compiling pinned engines from Ubuntu 26.04/ROCm 7.14.1...\033[0m"
+        IMAGE="docker.io/rocm/dev-ubuntu-26.04@sha256:372e5efcd5c68bed44c4e3d13a57648634f669a34e7e8b4b756985c4e4fa4cdf" \
+        VOLUME=lemonade26-llama \
+        JOBS="${LLM_BUILD_JOBS:-64}" \
+        ONLY=all \
+        "$ENGINE_SCRIPT"
 
-            echo "Building Vulkan Engine (Nathanw1014/llama.cpp:strix-halo-vulkan)..."
-            export CC=gcc
-            export CXX=g++
-            git clone -b strix-halo-vulkan --depth=1 https://github.com/Nathanw1014/llama.cpp.git /tmp/vulkan-src
-            cd /tmp/vulkan-src
-            cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
-            cmake --build build --config Release -j$(nproc) --target llama-server llama-cli llama-bench
-
-            # Clean stale dynamic libraries from previous portable unpacks. Keep the
-            # Nathan binary separate from the dispatch wrapper so every update really
-            # replaces llama-server-real instead of compiling a binary and overwriting
-            # it with the wrapper below.
-            rm -f /out/vulkan/bin/lib*.so* /out/vulkan/bin/llama-server-real
-            cp -f build/bin/llama-server /out/vulkan/bin/llama-server-real
-            cp -f build/bin/llama-cli build/bin/llama-bench /out/vulkan/bin/
-        ' || true
-
-        echo -e "\033[36m  Compiling Laurent Vulkan Engine (LaurentZuijdwijk/llama.cpp - ROCmFP4 & Adaptive DFlash2)...\033[0m"
-        podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.14.0-full bash -c '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslc glslang-tools spirv-headers spirv-tools libssl-dev
-
-            mkdir -p /tmp/vulkan-portable /out/vulkan-laurent/driver /out/vulkan-laurent/bin
-            curl -sL https://github.com/Nathanw1014/strix-halo-llamacpp/releases/latest/download/strix-halo-llamacpp-vulkan-portable.tar.gz | tar xz -C /tmp/vulkan-portable --strip-components=1 || true
-            if [[ -d /tmp/vulkan-portable/driver ]]; then
-                cp -a /tmp/vulkan-portable/driver/* /out/vulkan-laurent/driver/
-            fi
-
-            export CC=gcc CXX=g++
-            # Qwen3.8-Flash-Next ROCmFP4 uses Laurent qwen4exp/ROCmFPx
-            # branch, not the repository default branch. Keep the branch
-            # explicit so every sjust update rebuilds the correct backend.
-            LAURENT_BRANCH="vulkan/qwen4exp-rocmfpx"
-            git clone --branch "$LAURENT_BRANCH" --single-branch --depth=1 https://github.com/LaurentZuijdwijk/llama.cpp.git /tmp/laurent-src
-            cd /tmp/laurent-src
-            test "$(git branch --show-current)" = "$LAURENT_BRANCH"
-            cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
-            cmake --build build --config Release -j$(nproc) --target llama-server llama-cli llama-bench
-
-            rm -f /out/vulkan-laurent/bin/lib*.so*
-            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench /out/vulkan-laurent/bin/
-            {
-                printf "repo=https://github.com/LaurentZuijdwijk/llama.cpp.git\n"
-                printf "ref=%s\n" "$LAURENT_BRANCH"
-                printf "commit=%s\n" "$(git rev-parse HEAD)"
-            } > /out/vulkan-laurent/BUILD-INFO
-        ' || true
-            
-        echo -e "\033[36m  Compiling ROCm HIP engine (Gaetan Puleo - Strix Halo gfx1151)...\033[0m"
-        podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.14.0-full bash -c '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            export PATH=/opt/rocm/bin:$PATH
-            apt-get update -qq && apt-get install -y -qq git cmake build-essential libssl-dev libvulkan-dev glslc spirv-headers glslang-tools
-
-            git clone --depth=1 https://github.com/gaetan-puleo/llama-cpp-strix-halo.git /tmp/rocm-src
-            cd /tmp/rocm-src
-            cmake -B build \
-                -DGGML_HIP=ON \
-                -DAMDGPU_TARGETS=gfx1151 \
-                -DGGML_HIP_ROCWMMA_FATTN=ON \
-                -DCMAKE_BUILD_TYPE=Release
-            cmake --build build --config Release -j$(nproc)
-
-            OUT=/out/rocm.new
-            rm -rf "$OUT"
-            mkdir -p "$OUT/lib"
-            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench "$OUT/"
-            cp -Pf build/bin/*.so* "$OUT/lib/" 2>/dev/null || true
-            cp -aL /opt/rocm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
-            cp -aL /opt/rocm/llvm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
-            cp -a /opt/rocm/lib/rocblas "$OUT/lib/" 2>/dev/null || true
-
-            export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/llvm/lib:"$OUT/lib":$PWD/build/bin
-            declare -A seen=(); queue=("$OUT/llama-server" "$OUT/llama-cli" "$OUT/llama-bench" "$OUT/lib"/*.so*)
-            while (( ${#queue[@]} )); do
-                f="${queue[0]}"; queue=("${queue[@]:1}")
-                while read -r lib; do
-                    [ -f "$lib" ] || continue; [ "${seen[$lib]+1}" ] && continue
-                    seen[$lib]=1; cp -aL "$lib" "$OUT/lib/" 2>/dev/null || true; queue+=("$lib")
-                done < <(ldd "$f" 2>/dev/null | grep -oE "/[^ (]+" || true)
-            done
-            rm -rf /out/rocm
-            mv "$OUT" /out/rocm
-        ' || true
-
-        echo -e "\033[36m  Compiling CIRU ROCm HIP engine (ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4 - Strix Halo gfx1151)...\033[0m"
-        podman run --rm -v lemonade-llama:/out:rw,z docker.io/rocm/dev-ubuntu-24.04:7.14.0-full bash -c '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            export PATH=/opt/rocm/bin:$PATH
-            apt-get update -qq && apt-get install -y -qq git cmake ninja-build build-essential libssl-dev
-
-            git clone --depth=1 https://github.com/ciru-ai/Qwen3.8-Flash-CIRU-STRIX-IU4.git /tmp/ciru-src
-            cd /tmp/ciru-src
-            cmake -S . -B build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DGGML_HIP=ON \
-                -DAMDGPU_TARGETS=gfx1151 \
-                -DGGML_HIP_ROCWMMA_FATTN=ON
-            ninja -C build -j$(nproc) llama-server llama-cli llama-bench
-
-            OUT=/out/ciru.new
-            rm -rf "$OUT"
-            mkdir -p "$OUT/lib"
-            cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench "$OUT/"
-            cp -Pf build/bin/*.so* "$OUT/lib/" 2>/dev/null || true
-            cp -aL /opt/rocm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
-            cp -aL /opt/rocm/llvm/lib/*.so* "$OUT/lib/" 2>/dev/null || true
-            cp -a /opt/rocm/lib/rocblas "$OUT/lib/" 2>/dev/null || true
-
-            export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/llvm/lib:"$OUT/lib":$PWD/build/bin
-            declare -A seen=(); queue=("$OUT/llama-server" "$OUT/llama-cli" "$OUT/llama-bench" "$OUT/lib"/*.so*)
-            while (( ${#queue[@]} )); do
-                f="${queue[0]}"; queue=("${queue[@]:1}")
-                while read -r lib; do
-                    [ -f "$lib" ] || continue; [ "${seen[$lib]+1}" ] && continue
-                    seen[$lib]=1; cp -aL "$lib" "$OUT/lib/" 2>/dev/null || true; queue+=("$lib")
-                done < <(ldd "$f" 2>/dev/null | grep -oE "/[^ (]+" || true)
-            done
-            rm -rf /out/ciru
-            mv "$OUT" /out/ciru
-        ' || true
-
-        echo -e "\033[36m  Syncing MoE/Dense dispatch wrapper (canonical: /usr/share/turquoise/llama-dispatch-wrapper.sh)...\033[0m"
-        # lemond v10.8 launches /opt/lemonade/llama/vulkan/bin/llama-server or /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server for
-        # llamacpp_backend=vulkan. All locations must hold this wrapper while Nathan real binary lives at llama-server-real.
         WRAPPER_SRC="$HOME/turquoise/files/system/usr/share/turquoise/llama-dispatch-wrapper.sh"
         [[ -f "$WRAPPER_SRC" ]] || WRAPPER_SRC=/usr/share/turquoise/llama-dispatch-wrapper.sh
-        if [[ -f "$WRAPPER_SRC" ]]; then
-            podman exec lemonade bash -c 'if [[ -f /opt/lemonade/llama/vulkan/bin/llama-server && ! -f /opt/lemonade/llama/vulkan/bin/llama-server-real ]]; then mv /opt/lemonade/llama/vulkan/bin/llama-server /opt/lemonade/llama/vulkan/bin/llama-server-real; fi' || true
-            podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server || true
-            podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/vulkan/bin/llama-server || true
-            podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
-            podman exec lemonade chmod +x /opt/lemonade/llama/llama-server /opt/lemonade/llama/vulkan/bin/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server || true
-        else
-            echo -e "\033[31m  WARNING: $WRAPPER_SRC not found (image predates wrapper deployment) — skipping wrapper sync.\033[0m"
-        fi
+        [[ -f "$WRAPPER_SRC" ]] || {
+            echo -e "\033[31m  Dispatch wrapper not found: $WRAPPER_SRC\033[0m"
+            exit 1
+        }
+        echo -e "\033[36m  Synchronizing and validating the four-engine dispatch wrapper...\033[0m"
+        podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server
+        podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/vulkan/bin/llama-server
+        podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
+        podman exec lemonade chmod +x \
+            /opt/lemonade/llama/llama-server \
+            /opt/lemonade/llama/vulkan/bin/llama-server \
+            /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
+        podman exec lemonade bash -euc '
+            for f in /opt/lemonade/llama/llama-server /opt/lemonade/llama/vulkan/bin/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server; do
+                test -x "$f"
+                grep -q -- force-rocm "$f"
+                grep -q -- force-laurent "$f"
+                grep -q -- force-ciru "$f"
+            done
+        '
 
-        podman restart lemonade || true
-        sleep 3
-        if podman exec lemonade grep -q "force-rocm" /opt/lemonade/llama/llama-server 2>/dev/null && podman exec lemonade grep -q "force-laurent" /opt/lemonade/llama/llama-server 2>/dev/null && podman exec lemonade grep -q "force-ciru" /opt/lemonade/llama/llama-server 2>/dev/null; then
-            echo -e "\033[32m  Dispatch wrapper verified (Quad-engine Vulkan/Laurent/ROCm/CIRU routing intact).\033[0m"
-        else
-            echo -e "\033[31m  WARNING: dispatch wrapper missing a force-rocm, force-laurent, or force-ciru route — verify routing!\033[0m"
-        fi
-        if podman exec lemonade bash -c 'grep -a -q qwen4exp /opt/lemonade/llama/vulkan-laurent/bin/llama-server && grep -a -q ROCMFP4 /opt/lemonade/llama/vulkan-laurent/bin/llama-server' 2>/dev/null; then
-            echo -e "\033[32m  Laurent backend verified (qwen4exp + ROCmFP4 support present).\033[0m"
-        else
-            echo -e "\033[31m  WARNING: Laurent backend lacks qwen4exp/ROCmFP4 markers — the required branch may not be installed.\033[0m"
-        fi
+        podman restart lemonade
+        for _ in {1..30}; do
+            if curl -fsS --max-time 5 http://127.0.0.1:13305/api/v1/health | \
+                python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status")=="ok" and d.get("version")=="10.8.0" and d.get("model_loaded") is None else 1)'; then
+                echo -e "\033[32m  Ubuntu 26 Lemonade restart and health check passed.\033[0m"
+                break
+            fi
+            sleep 2
+        done
+        curl -fsS --max-time 15 http://127.0.0.1:13305/api/v1/health | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok" and d.get("version")=="10.8.0" and d.get("model_loaded") is None; print("  health:", d.get("status"), d.get("version"))'
+    else
+        echo -e "\033[33m  Lemonade container not found, skipping Ubuntu 26 engine update.\033[0m"
     fi
 
     echo -e "\n\033[34m=== Updating Homebrew and Packages ===\033[0m"
