@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Promote the validated Ubuntu 26 Lemonade candidate without touching the
-# production data volumes. The Ubuntu 24 container is retained for rollback.
+# Promote a validated Ubuntu 26 Lemonade candidate. This is destructive:
+# validate the candidate and arrange an external backup before invoking it.
 set -Eeuo pipefail
 
 OLD_CONTAINER="${OLD_CONTAINER:-lemonade}"
-ROLLBACK_CONTAINER="${ROLLBACK_CONTAINER:-lemonade-ubuntu24-rollback}"
 CANDIDATE_CONTAINER="${CANDIDATE_CONTAINER:-lemonade26-candidate}"
-NEW_IMAGE="${NEW_IMAGE:-localhost/lemonade-server:ubuntu26-v108-candidate}"
-ROLLBACK_IMAGE="${ROLLBACK_IMAGE:-localhost/lemonade-server:ubuntu24-v108-rollback}"
-ENGINE_VOLUME="${ENGINE_VOLUME:-lemonade26-llama}"
-RECIPE_VOLUME="${RECIPE_VOLUME:-lemonade26-v108-recipe}"
-CACHE_VOLUME="${CACHE_VOLUME:-lemonade26-v108-cache}"
+NEW_IMAGE="${NEW_IMAGE:-localhost/lemonade-server:ubuntu26-next-candidate}"
+ENGINE_VOLUME="${ENGINE_VOLUME:-lemonade26-candidate-llama}"
+RECIPE_VOLUME="${RECIPE_VOLUME:-lemonade26-candidate-recipe}"
+CACHE_VOLUME="${CACHE_VOLUME:-lemonade26-candidate-cache}"
 PORT="${PORT:-13305}"
 CANDIDATE_PORT="${CANDIDATE_PORT:-13310}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/ubuntu26-migration}"
@@ -65,7 +63,6 @@ main() {
   mkdir -p "$state"
 
   exists "$OLD_CONTAINER" || die "production container not found: $OLD_CONTAINER"
-  ! exists "$ROLLBACK_CONTAINER" || die "rollback container already exists: $ROLLBACK_CONTAINER"
   exists "$CANDIDATE_CONTAINER" || die "candidate container not found: $CANDIDATE_CONTAINER"
   podman image exists "$NEW_IMAGE" || die "candidate image not found: $NEW_IMAGE"
   for volume in "$ENGINE_VOLUME" "$RECIPE_VOLUME" "$CACHE_VOLUME"; do
@@ -76,15 +73,9 @@ main() {
   wait_health "$CANDIDATE_PORT" 10.8.0 || die "candidate health check failed; production was not changed"
   podman inspect "$CANDIDATE_CONTAINER" > "$state/candidate-inspect.json" 2>/dev/null || true
 
-  log "Recording and tagging the Ubuntu 24 rollback generation"
+  log "Recording the current production generation"
   podman inspect "$OLD_CONTAINER" > "$state/production-before.json"
-  podman volume inspect lemonade-llama lemonade-cache lemonade-recipe lemonade-rocm > "$state/production-volumes-before.json"
-  local old_image
-  # Tag the exact image ID referenced by the retained container, not a
-  # possibly moved floating image name.
-  old_image=$(podman inspect --format '{{.Image}}' "$OLD_CONTAINER")
-  podman tag "$old_image" "$ROLLBACK_IMAGE"
-  podman image inspect "$ROLLBACK_IMAGE" > "$state/rollback-image.json"
+  podman inspect "$OLD_CONTAINER" --format '{{range .Mounts}}{{.Name}} {{end}}' > "$state/production-volumes-before.txt"
 
   log "Checking that production has no loaded model"
   wait_health "$PORT" 10.8.0 || die "production is not clean/healthy; promotion aborted"
@@ -92,10 +83,8 @@ main() {
   log "Stopping only the candidate container"
   podman rm -f "$CANDIDATE_CONTAINER" >/dev/null 2>&1 || true
 
-  log "Stopping and retaining the Ubuntu 24 production container"
-  podman update --restart=no "$OLD_CONTAINER" >/dev/null
-  podman stop --time 15 "$OLD_CONTAINER" >/dev/null
-  podman rename "$OLD_CONTAINER" "$ROLLBACK_CONTAINER"
+  log "Stopping and removing the current production container"
+  podman rm -f "$OLD_CONTAINER" >/dev/null
 
   log "Starting Ubuntu 26 as the production container"
   if ! podman run -d \
@@ -114,27 +103,25 @@ main() {
     "$NEW_IMAGE" \
     ./lemond /root/.cache/lemonade --port "$PORT" --host 0.0.0.0 >/dev/null; then
     podman logs "$OLD_CONTAINER" > "$state/failed-promotion.log" 2>&1 || true
-    printf '\nProduction container start failed. Run the rollback script if needed.\n'
-    printf 'Run: %s/llm-ubuntu26-rollback.sh\n' "$(dirname "$0")"
+    printf '\nProduction container start failed; no local rollback generation is retained.\n'
+    printf 'Promotion state: %s\n' "$state"
     exit 1
   fi
 
   if ! wait_health "$PORT" 10.8.0; then
     podman logs "$OLD_CONTAINER" > "$state/failed-promotion.log" 2>&1 || true
-    printf '\nPromotion health check failed. Production is unavailable until rollback.\n'
-    printf 'Run: %s/llm-ubuntu26-rollback.sh\n' "$(dirname "$0")"
+    printf '\nPromotion health check failed; no local rollback generation is retained.\n'
+    printf 'Promotion state: %s\n' "$state"
     exit 1
   fi
 
   podman inspect "$OLD_CONTAINER" > "$state/production-after.json"
   {
-    printf 'rollback_container=%s\n' "$ROLLBACK_CONTAINER"
-    printf 'rollback_image=%s\n' "$ROLLBACK_IMAGE"
     printf 'production_container=%s\n' "$OLD_CONTAINER"
     printf 'production_image=%s\n' "$NEW_IMAGE"
     printf 'engine_volume=%s\nrecipe_volume=%s\ncache_volume=%s\n' "$ENGINE_VOLUME" "$RECIPE_VOLUME" "$CACHE_VOLUME"
   } > "$STATE_DIR/last-promotion"
-  log "Ubuntu 26 production container is healthy; Ubuntu 24 rollback retained"
+  log "Ubuntu 26 production container is healthy; no local rollback retained"
   log "Promotion state: $state"
 }
 

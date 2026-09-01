@@ -478,20 +478,12 @@ llm-ubuntu26-candidate action="status":
     [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-candidate.sh"
     "$SCRIPT" "{{action}}"
 
-# Promote the already-validated candidate. This retains the Ubuntu 24 rollback container.
+# Promote a validated candidate. This removes the current container; arrange external backups first.
 llm-ubuntu26-promote:
     #!/usr/bin/env bash
     set -euo pipefail
     SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-promote.sh"
     [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-promote.sh"
-    "$SCRIPT"
-
-# Restore the retained Ubuntu 24 Lemonade container without deleting volumes.
-llm-ubuntu26-rollback:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-rollback.sh"
-    [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-rollback.sh"
     "$SCRIPT"
 
 # System maintenance: health check, image upgrade, flatpaks, brew, distroboxes, firmware (not in setup)
@@ -659,8 +651,7 @@ update:
         }
 
         # Refuse to replace active engine files while a model is loaded. The
-        # production container uses the candidate-generation volume after the
-        # Ubuntu 26 cutover; the old lemonade-llama volume remains rollback-only.
+        # production container uses the active Ubuntu 26 engine volume.
         if ! curl -fsS --max-time 15 http://127.0.0.1:13305/api/v1/health | \
             python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status")=="ok" and d.get("model_loaded") is None and not d.get("all_models_loaded") else 1)'; then
             echo -e "\033[31m  Lemonade is not clean/healthy or has a model loaded; refusing engine replacement.\033[0m"
