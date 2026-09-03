@@ -572,6 +572,14 @@ llm-engines force="false":
 update quick="false" force="false":
     #!/usr/bin/env bash
     set -euo pipefail
+    IS_QUICK="false"
+    IS_FORCE="false"
+    for arg in "{{quick}}" "{{force}}"; do
+        case "$arg" in
+            quick|quick=true|true) IS_QUICK="true" ;;
+            force|force=true) IS_FORCE="true" ;;
+        esac
+    done
     echo -e "\033[33mNOTE: uupd handles image, flatpaks, homebrew, and distroboxes automatically daily at 4am.\033[0m"
 
     echo -e "\n\033[34m=== System Health Check ===\033[0m"
@@ -620,8 +628,8 @@ update quick="false" force="false":
 
     echo -e "\n\033[34m=== Updating MCP Servers (uv tools) ===\033[0m"
     if command -v uv >/dev/null; then
-        echo -e "\033[36m  Syncing uv tools from ~/.Uvfile (sjust uv)...\033[0m"
-        sjust uv
+        echo -e "\033[36m  Syncing uv tools from ~/.Uvfile...\033[0m"
+        just --justfile "{{justfile()}}" uv
     fi
 
     if command -v turbovault >/dev/null; then
@@ -707,12 +715,12 @@ update quick="false" force="false":
         echo -e "  \033[32mZotero MCP fork installed; service restarted.\033[0m"
     fi
 
-    if [[ "{{quick}}" != "true" ]]; then
+    if [[ "$IS_QUICK" != "true" ]]; then
         echo -e "\n\033[34m=== Updating pi-safe Container ===\033[0m"
-        sjust pi-safe full={{force}}
+        just --justfile "{{justfile()}}" pi-safe full="$IS_FORCE"
 
         echo -e "\n\033[34m=== Updating GPU LLM Engines in Lemonade ===\033[0m"
-        sjust llm-engines force={{force}}
+        just --justfile "{{justfile()}}" llm-engines force="$IS_FORCE"
     else
         echo -e "\n\033[33m=== Skipping container and LLM engine builds (quick mode) ===\033[0m"
     fi
@@ -729,14 +737,14 @@ update quick="false" force="false":
 
     echo -e "\n\033[34m=== Updating pipx Packages ===\033[0m"
     if command -v pipx >/dev/null; then
-        sjust pipx
+        just --justfile "{{justfile()}}" pipx
     else
         echo -e "\033[31m  pipx not found, skipping.\033[0m"
     fi
 
     echo -e "\n\033[34m=== Updating npm Global Packages ===\033[0m"
     if command -v npm >/dev/null; then
-        sjust npm
+        just --justfile "{{justfile()}}" npm
     else
         echo -e "\033[31m  npm not found, skipping.\033[0m"
     fi
