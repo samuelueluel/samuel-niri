@@ -535,7 +535,6 @@ llm-engines force="false":
     fi
 
     echo -e "\033[36mChecking bleeding-edge GPU LLM engines from upstream GitHub repos (FORCE=$IS_FORCE)...\033[0m"
-    IMAGE="docker.io/rocm/dev-ubuntu-26.04@sha256:372e5efcd5c68bed44c4e3d13a57648634f669a34e7e8b4b756985c4e4fa4cdf" \
     VOLUME=lemonade26-llama \
     JOBS="${LLM_BUILD_JOBS:-64}" \
     FORCE="$IS_FORCE" \

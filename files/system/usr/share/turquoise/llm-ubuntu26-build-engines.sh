@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# AMD ROCm 7.14.1-full Ubuntu 26.04 amd64 manifest.
-IMAGE="${IMAGE:-docker.io/rocm/dev-ubuntu-26.04@sha256:372e5efcd5c68bed44c4e3d13a57648634f669a34e7e8b4b756985c4e4fa4cdf}"
+# AMD ROCm 10.0.0-full Ubuntu 26.04 amd64 builder image.
+# The image tag is intentionally used as the stable release track; the resolved
+# image ID is recorded in BUILD-INFO by the caller's container runtime.
+IMAGE="${IMAGE:-docker.io/rocm/dev-ubuntu-26.04:10.0.0-full}"
 VOLUME="${VOLUME:-lemonade26-llama}"
 JOBS="${JOBS:-64}"
 ONLY="${ONLY:-all}"
@@ -33,6 +35,13 @@ podman volume exists "$TOOLCHAIN_VOLUME" || podman volume create "$TOOLCHAIN_VOL
 VOLUME_MOUNT=$(podman volume inspect "$VOLUME" --format '{{.Mountpoint}}' 2>/dev/null || true)
 TOOLCHAIN_MOUNT=$(podman volume inspect "$TOOLCHAIN_VOLUME" --format '{{.Mountpoint}}' 2>/dev/null || true)
 
+# Refresh the selected stable builder tag and capture its resolved identity. The tag
+# remains the user-facing stable track; the ID/digest makes each engine artifact auditable.
+echo "=== Builder image: $IMAGE ==="
+podman pull "$IMAGE" >/dev/null
+IMAGE_ID=$(podman image inspect "$IMAGE" --format '{{.Id}}')
+IMAGE_DIGEST=$(podman image inspect "$IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' | head -1)
+
 latest_shaderc_tag() {
   local refs tag
   refs=$(git ls-remote --tags --refs "$SHADERC_REPO" 'refs/tags/v*') || {
@@ -50,12 +59,18 @@ latest_shaderc_tag() {
 }
 
 ensure_shaderc() {
-  local current_tag=""
+  local current_tag="" current_image="" current_image_id=""
   if [[ -f "$TOOLCHAIN_MOUNT/shaderc/current/VERSION" ]]; then
     current_tag=$(cat "$TOOLCHAIN_MOUNT/shaderc/current/VERSION")
   fi
+  if [[ -f "$TOOLCHAIN_MOUNT/shaderc/current/BUILD_IMAGE" ]]; then
+    current_image=$(cat "$TOOLCHAIN_MOUNT/shaderc/current/BUILD_IMAGE")
+  fi
+  if [[ -f "$TOOLCHAIN_MOUNT/shaderc/current/BUILD_IMAGE_ID" ]]; then
+    current_image_id=$(cat "$TOOLCHAIN_MOUNT/shaderc/current/BUILD_IMAGE_ID")
+  fi
 
-  if [[ "$current_tag" == "$SHADERC_TAG" && -x "$TOOLCHAIN_MOUNT/shaderc/current/glslc" ]]; then
+  if [[ "$current_tag" == "$SHADERC_TAG" && "$current_image" == "$IMAGE" && "$current_image_id" == "$IMAGE_ID" && -x "$TOOLCHAIN_MOUNT/shaderc/current/glslc" ]]; then
     echo "=== Shaderc $SHADERC_TAG (cached) ==="
     echo "  glslc: $(cat "$TOOLCHAIN_MOUNT/shaderc/current/GLSLC_VERSION" 2>/dev/null || true)"
     return 0
@@ -65,6 +80,8 @@ ensure_shaderc() {
   podman run --rm --user 0:0 --name lemonade26-build-shaderc \
     -e "SHADERC_REPO=$SHADERC_REPO" \
     -e "SHADERC_TAG=$SHADERC_TAG" \
+    -e "BUILD_IMAGE=$IMAGE" \
+    -e "BUILD_IMAGE_ID=$IMAGE_ID" \
     -e "JOBS=$JOBS" \
     -v "$TOOLCHAIN_VOLUME:/toolchain:rw,z" \
     "$IMAGE" bash -euc '
@@ -90,6 +107,8 @@ ensure_shaderc() {
   install -m 0755 /tmp/shaderc-build/glslc/glslc "$stage/glslc"
   "$stage/glslc" --version | head -1 > "$stage/GLSLC_VERSION"
   printf "%s\\n" "$SHADERC_TAG" > "$stage/VERSION"
+  printf "%s\\n" "$BUILD_IMAGE" > "$stage/BUILD_IMAGE"
+  printf "%s\\n" "$BUILD_IMAGE_ID" > "$stage/BUILD_IMAGE_ID"
   rm -rf "/toolchain/shaderc/$SHADERC_TAG"
   mv "$stage" "/toolchain/shaderc/$SHADERC_TAG"
 
@@ -116,6 +135,7 @@ should_build() {
   local ref="$3"
   local out_sub="$4"
   local expected_shaderc_tag="${5:-}"
+  local expected_image_id="${6:-}"
 
   if [[ "$FORCE" == "true" ]]; then
     return 0
@@ -142,8 +162,17 @@ should_build() {
         return 0
       fi
     fi
+    if [[ -n "$expected_image_id" ]]; then
+      local local_image_id=""
+      local_image_id=$(grep '^base_image_id=' "$VOLUME_MOUNT/$out_sub/BUILD-INFO" 2>/dev/null | cut -d= -f2 || true)
+      if [[ "$local_image_id" != "$expected_image_id" ]]; then
+        echo "=== $engine ==="
+        echo "  Source/toolchain is current, but builder image changed: ${local_image_id:-<unrecorded>} -> $expected_image_id"
+        return 0
+      fi
+    fi
     echo "=== $engine ==="
-    echo "  Already up to date at latest commit: $local_commit (Shaderc ${expected_shaderc_tag:-not tracked})"
+    echo "  Already up to date at latest commit: $local_commit (Shaderc ${expected_shaderc_tag:-not tracked}; image ${expected_image_id:-not tracked})"
     return 1
   fi
 
@@ -156,13 +185,16 @@ run_builder() {
   echo "=== $name (building bleeding-edge) ==="
   podman run --rm --name "lemonade26-build-$name" \
     -e "SHADERC_TAG=${SHADERC_TAG:-}" \
+    -e "BUILD_IMAGE=$IMAGE" \
+    -e "BUILD_IMAGE_ID=$IMAGE_ID" \
+    -e "BUILD_IMAGE_DIGEST=$IMAGE_DIGEST" \
     -v "$VOLUME:/out:rw,z" \
     -v "$TOOLCHAIN_VOLUME:/toolchain:ro,z" \
     "$IMAGE" bash -euc "$*"
 }
 
 if [[ "$ONLY" == all || "$ONLY" == nathan ]]; then
-if should_build nathan "https://github.com/Nathanw1014/llama.cpp.git" "refs/heads/strix-halo-vulkan" "vulkan" "$SHADERC_TAG"; then
+if should_build nathan "https://github.com/Nathanw1014/llama.cpp.git" "refs/heads/strix-halo-vulkan" "vulkan" "$SHADERC_TAG" "$IMAGE_ID"; then
 run_builder nathan '
   export DEBIAN_FRONTEND=noninteractive
   export CC=gcc CXX=g++
@@ -207,7 +239,9 @@ run_builder nathan '
     printf "repo=https://github.com/Nathanw1014/llama.cpp.git\n"
     printf "ref=strix-halo-vulkan\n"
     printf "commit=%s\n" "$NATHAN_COMMIT"
-    printf "base_image=%s\n" "'"$IMAGE"'"
+    printf "base_image=%s\n" "$BUILD_IMAGE"
+    printf "base_image_id=%s\n" "$BUILD_IMAGE_ID"
+    printf "base_image_digest=%s\n" "$BUILD_IMAGE_DIGEST"
     printf "os=%s\n" "$(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
     printf "glibc=%s\n" "$(ldd --version | head -1)"
     printf "gcc=%s\n" "$(gcc --version | head -1)"
@@ -224,7 +258,7 @@ fi
 fi
 
 if [[ "$ONLY" == all || "$ONLY" == laurent ]]; then
-if should_build laurent "https://github.com/LaurentZuijdwijk/llama.cpp.git" "refs/heads/vulkan/qwen4exp-rocmfpx" "vulkan-laurent" "$SHADERC_TAG"; then
+if should_build laurent "https://github.com/LaurentZuijdwijk/llama.cpp.git" "refs/heads/vulkan/qwen4exp-rocmfpx" "vulkan-laurent" "$SHADERC_TAG" "$IMAGE_ID"; then
 run_builder laurent '
   export DEBIAN_FRONTEND=noninteractive
   export CC=gcc CXX=g++
@@ -268,7 +302,9 @@ run_builder laurent '
     printf "repo=https://github.com/LaurentZuijdwijk/llama.cpp.git\n"
     printf "ref=%s\n" "$LAURENT_BRANCH"
     printf "commit=%s\n" "$LAURENT_COMMIT"
-    printf "base_image=%s\n" "'"$IMAGE"'"
+    printf "base_image=%s\n" "$BUILD_IMAGE"
+    printf "base_image_id=%s\n" "$BUILD_IMAGE_ID"
+    printf "base_image_digest=%s\n" "$BUILD_IMAGE_DIGEST"
     printf "os=%s\n" "$(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
     printf "glibc=%s\n" "$(ldd --version | head -1)"
     printf "gcc=%s\n" "$(gcc --version | head -1)"
@@ -285,12 +321,14 @@ fi
 fi
 
 if [[ "$ONLY" == all || "$ONLY" == gaetan ]]; then
-if should_build gaetan "https://github.com/gaetan-puleo/llama-cpp-strix-halo.git" "HEAD" "rocm"; then
+if should_build gaetan "https://github.com/gaetan-puleo/llama-cpp-strix-halo.git" "HEAD" "rocm" "" "$IMAGE_ID"; then
 run_builder gaetan '
   export DEBIAN_FRONTEND=noninteractive
+  export CC=gcc CXX=g++
   export PATH=/opt/rocm/bin:$PATH
   apt-get update -qq
   apt-get install -y -qq git cmake build-essential libssl-dev libvulkan-dev spirv-headers glslang-tools
+  CPU_TARGET=$(gcc -Q --help=target -march=native 2>/dev/null | awk '\''$1 == "-march=" { print $2; exit }'\'')
   echo "OS: $(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
   echo "ROCm: $(hipconfig --version 2>/dev/null || true)"
   echo "gcc: $(gcc --version | head -1)"
@@ -302,6 +340,7 @@ run_builder gaetan '
   GAETAN_COMMIT=$(git rev-parse HEAD)
   cmake -B build \
     -DGGML_HIP=ON \
+    -DGGML_NATIVE=ON \
     -DAMDGPU_TARGETS=gfx1151 \
     -DGGML_HIP_ROCWMMA_FATTN=ON \
     -DCMAKE_BUILD_TYPE=Release
@@ -309,6 +348,7 @@ run_builder gaetan '
   for f in llama-server llama-cli llama-bench; do test -x "build/bin/$f"; done
 
   OUT=/out/rocm26.new
+  rm -rf "$OUT"
   mkdir -p "$OUT/lib"
   shopt -s nullglob
   cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench "$OUT/"
@@ -328,12 +368,17 @@ run_builder gaetan '
     f="${queue[0]}"; queue=("${queue[@]:1}")
     test -e "$f" || continue
     while read -r lib; do
-      test -f "$lib" || continue
-      [[ ${seen[$lib]+x} ]] && continue
-      seen[$lib]=1
+      lib_real=$(readlink -f "$lib" 2>/dev/null || true)
+      [[ -n "$lib_real" && -f "$lib_real" ]] || continue
+
       dest="$OUT/lib/$(basename "$lib")"
-      if [[ "$lib" != "$dest" ]]; then
-        cp -aL "$lib" "$dest"
+      key="$dest"
+      [[ ${seen[$key]+x} ]] && continue
+      seen[$key]=1
+
+      dest_real=$(readlink -f "$dest" 2>/dev/null || true)
+      if [[ "$lib_real" != "$dest_real" ]]; then
+        cp -aL "$lib_real" "$dest"
       fi
       queue+=("$dest")
     done < <(ldd "$f" 2>/dev/null | grep -oE "/[^ (]+" || true)
@@ -342,12 +387,22 @@ run_builder gaetan '
     printf "repo=https://github.com/gaetan-puleo/llama-cpp-strix-halo.git\n"
     printf "ref=HEAD\n"
     printf "commit=%s\n" "$GAETAN_COMMIT"
-    printf "base_image=%s\n" "'"$IMAGE"'"
+    printf "base_image=%s\n" "$BUILD_IMAGE"
+    printf "base_image_id=%s\n" "$BUILD_IMAGE_ID"
+    printf "base_image_digest=%s\n" "$BUILD_IMAGE_DIGEST"
     printf "os=%s\n" "$(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
     printf "glibc=%s\n" "$(ldd --version | head -1)"
     printf "rocm=%s\n" "$(hipconfig --version 2>/dev/null || true)"
+    printf "ggml_native=ON\n"
+    printf "cpu_target=%s\n" "${CPU_TARGET:-native}"
     printf "gcc=%s\n" "$(gcc --version | head -1)"
   } > "$OUT/BUILD-INFO"
+
+  STAGED_LP="$OUT:$OUT/lib:$OUT/rocm/lib:$OUT/rocm/lib/rocm_sysdeps/lib:$OUT/rocm/lib/llvm/lib"
+  "$OUT/ld-linux-x86-64.so.2" \
+    --library-path "$STAGED_LP" \
+    "$OUT/llama-server" --help >/dev/null
+
   rm -rf /out/rocm
   mv "$OUT" /out/rocm
 '
