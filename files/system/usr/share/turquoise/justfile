@@ -468,30 +468,95 @@ distroboxes:
     systemctl --user enable --now rustdesk
     echo "arch-box done."
 
-# Build and validate an isolated Ubuntu 26.04 GPU/Lemonade candidate.
-# Use an explicit action: sjust llm-ubuntu26-candidate status|runtime|prepare|build|start|validate|all.
-# This never changes the production lemonade container or volumes.
-llm-ubuntu26-candidate action="status":
+# Build the isolated coding agent sandbox container (localhost/pi-safe:latest)
+pi-safe no_cache="false":
     #!/usr/bin/env bash
     set -euo pipefail
-    SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-candidate.sh"
-    [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-candidate.sh"
-    "$SCRIPT" "{{action}}"
+    CONTAINERFILE="$HOME/dotfiles/dot_pi/Containerfile"
+    if [[ ! -f "$CONTAINERFILE" ]]; then
+        echo -e "\033[31mpi-safe Containerfile not found at $CONTAINERFILE\033[0m"
+        exit 1
+    fi
+    BUILD_FLAGS=()
+    if [[ "{{no_cache}}" == "true" ]]; then
+        BUILD_FLAGS+=(--no-cache)
+    fi
+    echo -e "\033[36mBuilding localhost/pi-safe:latest...\033[0m"
+    podman build "${BUILD_FLAGS[@]}" -t localhost/pi-safe:latest -f "$CONTAINERFILE" "$HOME/dotfiles"
+    echo -e "\033[32mlocalhost/pi-safe:latest build complete.\033[0m"
 
-# Promote a validated candidate. This removes the current container; arrange external backups first.
-llm-ubuntu26-promote:
+# Check and compile bleeding-edge GPU LLM engines (Vulkan RADV, Laurent, myhacsint, Gaetan, CIRU)
+llm-engines force="false":
     #!/usr/bin/env bash
     set -euo pipefail
-    SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-promote.sh"
-    [[ -x "$SCRIPT" ]] || SCRIPT="{{SHARE}}/llm-ubuntu26-promote.sh"
-    "$SCRIPT"
+    if ! podman inspect lemonade 2>/dev/null | grep -q 'lemonade'; then
+        echo -e "\033[33mLemonade container not found, skipping GPU engine update.\033[0m"
+        exit 0
+    fi
+    ENGINE_SCRIPT="{{HOME}}/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-build-engines.sh"
+    [[ -x "$ENGINE_SCRIPT" ]] || ENGINE_SCRIPT="{{SHARE}}/llm-ubuntu26-build-engines.sh"
+    [[ -x "$ENGINE_SCRIPT" ]] || {
+        echo -e "\033[31mLLM engine builder not found: $ENGINE_SCRIPT\033[0m"
+        exit 1
+    }
+
+    # Attempt to gracefully unload model if loaded before rebuilding/swapping
+    if curl -fsS --max-time 3 http://127.0.0.1:13305/api/v1/health 2>/dev/null | \
+        python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get("model_loaded") or d.get("all_models_loaded")) else 1)' 2>/dev/null; then
+        echo -e "\033[33m  Lemonade has a model loaded; sending unload request...\033[0m"
+        curl -fsS -X POST http://127.0.0.1:13305/api/v1/unload 2>/dev/null || true
+        sleep 2
+    fi
+
+    echo -e "\033[36mChecking bleeding-edge GPU LLM engines from upstream GitHub repos...\033[0m"
+    IMAGE="docker.io/rocm/dev-ubuntu-26.04@sha256:372e5efcd5c68bed44c4e3d13a57648634f669a34e7e8b4b756985c4e4fa4cdf" \
+    VOLUME=lemonade26-llama \
+    JOBS="${LLM_BUILD_JOBS:-64}" \
+    FORCE="{{force}}" \
+    ONLY=all \
+    "$ENGINE_SCRIPT"
+
+    WRAPPER_SRC="{{HOME}}/turquoise/files/system/usr/share/turquoise/llama-dispatch-wrapper.sh"
+    [[ -f "$WRAPPER_SRC" ]] || WRAPPER_SRC="{{SHARE}}/llama-dispatch-wrapper.sh"
+    if [[ -f "$WRAPPER_SRC" ]]; then
+        echo -e "\033[36mSynchronizing and validating the five-engine dispatch wrapper...\033[0m"
+        podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server
+        podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/vulkan/bin/llama-server
+        podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
+        podman exec lemonade chmod +x \
+            /opt/lemonade/llama/llama-server \
+            /opt/lemonade/llama/vulkan/bin/llama-server \
+            /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
+        podman exec lemonade bash -euc '
+            for f in /opt/lemonade/llama/llama-server /opt/lemonade/llama/vulkan/bin/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server; do
+                test -x "$f"
+                grep -q -- force-rocm "$f"
+                grep -q -- force-laurent "$f"
+                grep -q -- force-ciru "$f"
+                grep -q -- force-myhacsint "$f"
+            done
+        '
+    fi
+
+    podman restart lemonade
+    for _ in {1..30}; do
+        if curl -fsS --max-time 5 http://127.0.0.1:13305/api/v1/health 2>/dev/null | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("status")=="ok" and d.get("version")=="10.8.0" and d.get("model_loaded") is None else 1)' 2>/dev/null; then
+            echo -e "\033[32mLemonade restart and health check passed.\033[0m"
+            break
+        fi
+        sleep 2
+    done
 
 # System maintenance: health check, image upgrade, flatpaks, brew, distroboxes, firmware (not in setup)
-update:
+# Options:
+#   sjust update              # Full update, checking bleeding-edge LLM engine commits & updating pi container
+#   sjust update quick=true   # Fast update, skipping LLM engine and container rebuilds
+#   sjust update force=true   # Force full recompile of all 5 LLM engines
+update quick="false" force="false":
     #!/usr/bin/env bash
     set -euo pipefail
     echo -e "\033[33mNOTE: uupd handles image, flatpaks, homebrew, and distroboxes automatically daily at 4am.\033[0m"
-    echo -e "\033[33mNOTE: Some packages built from source in image recipe are PINNED and won't update without manual intervention; others pull latest release without notification.\033[0m"
 
     echo -e "\n\033[34m=== System Health Check ===\033[0m"
     echo -e "\033[36m  \$ systemctl --failed\033[0m"
@@ -548,9 +613,6 @@ update:
         latest_tag=$(curl -s --connect-timeout 5 https://api.github.com/repos/Epistates/turbovault/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
         current_ver=$(turbovault --version 2>/dev/null | awk '{print $2}' || true)
         if [[ -n "$latest_tag" && "v${current_ver}" != "$latest_tag" && "$current_ver" != "$latest_tag" ]]; then
-            # Container-build with the sql feature: the official release tarball ships WITHOUT
-            # sql (no query_frontmatter_sql / inspect_frontmatter). Mirrors the turbovault-http
-            # build below (same rust:1.90-bookworm container + tv-fix-tool-schemas patch).
             echo -e "\033[33m  Rebuilding TurboVault (sql) from ${current_ver:-unknown} to ${latest_tag}...\033[0m"
             SRC_TV="$HOME/.local/src/turbovault"
             if [[ -d "$SRC_TV/.git" ]]; then
@@ -624,83 +686,19 @@ update:
         "$HOME/.agents/mcp/searxng/venv/bin/pip" install --upgrade -q mcp requests 2>/dev/null || true
     fi
 
-    # zotero-mcp-server is installed from Samuel's tested fork by ~/.Uvfile.
-    # The fork contains its own source-level enhancements; no runtime patch
-    # injection is needed here. Restart after sjust uv so the service picks up
-    # a newly installed fork release.
     if [[ -x "{{HOME}}/.local/bin/zotero-mcp-server" ]]; then
         systemctl --user restart zotero-mcp.service 2>/dev/null || true
         echo -e "  \033[32mZotero MCP fork installed; service restarted.\033[0m"
     fi
 
-    echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
-    if [[ -f "$HOME/dotfiles/dot_pi/Containerfile" ]]; then
-        echo -e "\033[36m  \$ podman build --no-cache -t localhost/pi-safe:latest ...\033[0m"
-        podman build --no-cache -t localhost/pi-safe:latest -f "$HOME/dotfiles/dot_pi/Containerfile" "$HOME/dotfiles" || true
+    if [[ "{{quick}}" != "true" ]]; then
+        echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
+        sjust pi-safe
+
+        echo -e "\n\033[34m=== Updating GPU LLM Engines in Lemonade ===\033[0m"
+        sjust llm-engines force={{force}}
     else
-        echo -e "\033[31m  pi-safe Containerfile not found, skipping.\033[0m"
-    fi
-
-    echo -e "\n\033[34m=== Updating Ubuntu 26 GPU LLM Engines in Lemonade ===\033[0m"
-    if podman inspect lemonade 2>/dev/null | grep -q 'lemonade'; then
-        ENGINE_SCRIPT="$HOME/turquoise/files/system/usr/share/turquoise/llm-ubuntu26-build-engines.sh"
-        [[ -x "$ENGINE_SCRIPT" ]] || ENGINE_SCRIPT=/usr/share/turquoise/llm-ubuntu26-build-engines.sh
-        [[ -x "$ENGINE_SCRIPT" ]] || {
-            echo -e "\033[31m  Ubuntu 26 engine builder not found: $ENGINE_SCRIPT\033[0m"
-            exit 1
-        }
-
-        # Refuse to replace active engine files while a model is loaded. The
-        # production container uses the active Ubuntu 26 engine volume.
-        if ! curl -fsS --max-time 15 http://127.0.0.1:13305/api/v1/health | \
-            python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status")=="ok" and d.get("model_loaded") is None and not d.get("all_models_loaded") else 1)'; then
-            echo -e "\033[31m  Lemonade is not clean/healthy or has a model loaded; refusing engine replacement.\033[0m"
-            exit 1
-        fi
-
-        echo -e "\033[36m  Compiling pinned engines from Ubuntu 26.04/ROCm 7.14.1...\033[0m"
-        IMAGE="docker.io/rocm/dev-ubuntu-26.04@sha256:372e5efcd5c68bed44c4e3d13a57648634f669a34e7e8b4b756985c4e4fa4cdf" \
-        VOLUME=lemonade26-llama \
-        JOBS="${LLM_BUILD_JOBS:-64}" \
-        ONLY=all \
-        "$ENGINE_SCRIPT"
-
-        WRAPPER_SRC="$HOME/turquoise/files/system/usr/share/turquoise/llama-dispatch-wrapper.sh"
-        [[ -f "$WRAPPER_SRC" ]] || WRAPPER_SRC=/usr/share/turquoise/llama-dispatch-wrapper.sh
-        [[ -f "$WRAPPER_SRC" ]] || {
-            echo -e "\033[31m  Dispatch wrapper not found: $WRAPPER_SRC\033[0m"
-            exit 1
-        }
-        echo -e "\033[36m  Synchronizing and validating the four-engine dispatch wrapper...\033[0m"
-        podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server
-        podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/vulkan/bin/llama-server
-        podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
-        podman exec lemonade chmod +x \
-            /opt/lemonade/llama/llama-server \
-            /opt/lemonade/llama/vulkan/bin/llama-server \
-            /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
-        podman exec lemonade bash -euc '
-            for f in /opt/lemonade/llama/llama-server /opt/lemonade/llama/vulkan/bin/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server; do
-                test -x "$f"
-                grep -q -- force-rocm "$f"
-                grep -q -- force-laurent "$f"
-                grep -q -- force-ciru "$f"
-            done
-        '
-
-        podman restart lemonade
-        for _ in {1..30}; do
-            if curl -fsS --max-time 5 http://127.0.0.1:13305/api/v1/health | \
-                python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status")=="ok" and d.get("version")=="10.8.0" and d.get("model_loaded") is None else 1)'; then
-                echo -e "\033[32m  Ubuntu 26 Lemonade restart and health check passed.\033[0m"
-                break
-            fi
-            sleep 2
-        done
-        curl -fsS --max-time 15 http://127.0.0.1:13305/api/v1/health | \
-            python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("status")=="ok" and d.get("version")=="10.8.0" and d.get("model_loaded") is None; print("  health:", d.get("status"), d.get("version"))'
-    else
-        echo -e "\033[33m  Lemonade container not found, skipping Ubuntu 26 engine update.\033[0m"
+        echo -e "\n\033[33m=== Skipping container and LLM engine builds (quick mode) ===\033[0m"
     fi
 
     echo -e "\n\033[34m=== Updating Homebrew and Packages ===\033[0m"
@@ -814,7 +812,6 @@ halo:
     echo -e "\033[33m  None of the above are verified by 'sjust halo-verify' — they are firmware-only.\033[0m"
     echo ""
     echo -e "\033[36m  ▶ Now: REBOOT\033[0m to activate the compression workaround + any karg changes."
-    echo -e "\033[36m  ▶ After reboot: run 'sjust halo-llm'\033[0m to set up the NPU distrobox + lemond service."
     echo -e "\n\033[32mhalo setup complete (automated steps).\033[0m Manual BIOS steps above are still up to you."
 
 # Verify turquoise-halo baked features: kargs, webcam, sched-ext, NPU, suspend (read-only)
@@ -882,404 +879,16 @@ halo-verify:
         warn "no 'GTT memory' line in kernel log (check perms or reboot)"
     fi
 
-    echo -e "\033[34mNPU (XDNA2 / amdxdna)\033[0m"
-    if [[ -e /dev/accel/accel0 ]]; then
+    echo -e "\033[34mNPU Status (XDNA2 / amdxdna)\033[0m"
+    if grep -q -- "amd_iommu=off" <<<"$KARGS"; then
+        pass "NPU disabled via amd_iommu=off (allocating full memory bandwidth to Radeon 8060S iGPU)"
+    elif [[ -e /dev/accel/accel0 ]]; then
         pass "/dev/accel/accel0 present"
     else
-        warn "/dev/accel/accel0 absent — NPU off (amd_iommu=off set?) or kernel/firmware too old"
-    fi
-    MLOCK_CONF=/etc/systemd/system/user@.service.d/memlock.conf
-    [[ -f "$MLOCK_CONF" ]] \
-        && pass "LimitMEMLOCK=infinity configured ($MLOCK_CONF)" \
-        || warn "memlock limit not raised — run 'sjust halo-llm'"
-    distrobox list 2>/dev/null | grep -q 'npu-lemonade' \
-        && pass "npu-lemonade distrobox exists" \
-        || warn "npu-lemonade distrobox missing — run 'sjust halo-llm'"
-    if systemctl --user is-active --quiet npu-lemond.service 2>/dev/null; then
-        pass "npu-lemond.service active (lemond :13305, NPU-enabled)"
-    elif systemctl --user is-active --quiet lemond.service 2>/dev/null; then
-        warn "lemond.service active (host RPM, no NPU) — run 'sjust halo-llm' to switch to NPU build"
-    else
-        warn "no lemond service running — run 'sjust halo-llm'"
+        warn "/dev/accel/accel0 absent"
     fi
 
     echo -e "\033[34mSuspend test tooling\033[0m"
     command -v amd-s2idle >/dev/null && pass "amd-s2idle available — run 'sudo amd-s2idle test' to validate s2idle" \
         || warn "amd-s2idle not installed — run 'sjust halo' or 'pipx install amd-debug-tools'"
-
-
-# Set up the local NPU LLM stack inside an Ubuntu distrobox: XRT + FastFlowLM (NPU backend) +
-# Lemonade (orchestrator on :13305), memlock fix, user service (turquoise-halo only).
-# Lemonade is the server clients talk to; it calls FLM for NPU models and llama.cpp for GGUFs.
-# Run after 'sjust halo' + reboot. Idempotent and self-healing — each piece is checked
-# independently, so a partial/interrupted run is completed (not redone) on the next invocation.
-# See: ~/Dropbox/.../Local LLMs/Strix Halo LLM Guide.md §2.C / §5.B.2
-halo-llm:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(cat /usr/share/turquoise/image-id 2>/dev/null)" != "turquoise-halo" ]]; then
-        echo -e "\033[31mThis recipe is for the turquoise-halo image only.\033[0m"; exit 1
-    fi
-    pass() { echo -e "  \033[32m✓\033[0m $*"; }
-    info() { echo -e "  \033[34m→\033[0m $*"; }
-    fail() { echo -e "  \033[31m✗\033[0m $*"; }
-
-    # 1. Memlock — NPU inference requires locking model weights in RAM (default 8 MB is too low)
-    echo -e "\n\033[34m=== 1/4 Memlock limit (LimitMEMLOCK=infinity) ===\033[0m"
-    MLOCK_CONF=/etc/systemd/system/user@.service.d/memlock.conf
-    if [[ -f "$MLOCK_CONF" ]]; then
-        pass "Already configured."
-    else
-        sudo mkdir -p "$(dirname "$MLOCK_CONF")"
-        printf '[Service]\nLimitMEMLOCK=infinity\n' | sudo tee "$MLOCK_CONF" >/dev/null
-        sudo systemctl daemon-reload
-        pass "Configured. You must reboot (or log out/in) before NPU inference will work in this session."
-    fi
-
-    # 2. npu-lemonade distrobox — Ubuntu 24.04 with /dev/accel/accel0 for the XDNA2 NPU.
-    # FLM (FastFlowLM) only ships Ubuntu/Debian debs; this box provides the XRT + FLM runtime
-    # that the host Fedora image can't install directly.
-    echo -e "\n\033[34m=== 2/4 npu-lemonade distrobox (Ubuntu 24.04 + NPU device) ===\033[0m"
-    if distrobox list 2>/dev/null | grep -q 'npu-lemonade'; then
-        pass "Already exists."
-    else
-        info "Creating distrobox with /dev/accel/accel0 passthrough..."
-        distrobox create --name npu-lemonade \
-            --image docker.io/library/ubuntu:24.04 \
-            --additional-flags "--device /dev/accel/accel0" \
-            --yes
-        pass "Created."
-    fi
-
-    # 3. XRT + Lemonade + FastFlowLM inside the distrobox — two INDEPENDENT installs so a
-    # partial state (e.g. FLM present but Lemonade missing) is completed, not redone, on re-run:
-    #   - lemonade-server (PPA) → 'lemond' (server daemon) + 'lemonade' (CLI) — the orchestrator
-    #   - FastFlowLM (GitHub .deb) → 'flm' — the NPU inference backend Lemonade calls
-    # amdxdna-dkms is deliberately NOT installed: the host's in-tree kernel-7.0 amdxdna driver
-    # already provides /dev/accel/accel0, and a DKMS build inside the container would target the
-    # wrong (container) kernel headers, not the running host kernel.
-    echo -e "\n\033[34m=== 3/4 XRT + Lemonade + FastFlowLM inside distrobox ===\033[0m"
-    inbox() { distrobox enter npu-lemonade -- bash -lc "$1"; }
-
-    # 3a. XRT + Lemonade from ppa:lemonade-team/stable
-    if inbox 'command -v lemond' &>/dev/null; then
-        pass "Lemonade (lemond) already installed."
-    else
-        info "Installing XRT + Lemonade from ppa:lemonade-team/stable (apt — a few minutes)..."
-        inbox '
-            set -euo pipefail
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq software-properties-common wget
-            sudo add-apt-repository -y ppa:lemonade-team/stable 2>&1 | tail -1
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq libxrt-npu2 lemonade-server
-        '
-        pass "Lemonade installed."
-    fi
-
-    # 3b. FastFlowLM (NPU backend) — latest ubuntu24.04 .deb from GitHub releases
-    if inbox 'command -v flm' &>/dev/null; then
-        pass "FastFlowLM (flm) already installed."
-    else
-        info "Fetching latest FLM ubuntu24.04 .deb..."
-        FLM_URL=$(curl -sf https://api.github.com/repos/FastFlowLM/FastFlowLM/releases/latest \
-            | python3 -c "import json,sys; a=[x for x in json.load(sys.stdin)['assets'] if 'ubuntu24.04' in x['name'] and x['name'].endswith('.deb')]; print(a[0]['browser_download_url'] if a else '')")
-        [[ -n "$FLM_URL" ]] || { fail "No FLM ubuntu24.04 .deb asset found in the latest release."; exit 1; }
-        info "Installing FLM ($FLM_URL)..."
-        inbox "
-            set -euo pipefail
-            wget -q '$FLM_URL' -O /tmp/flm.deb
-            sudo apt-get install -y -qq /tmp/flm.deb
-            rm -f /tmp/flm.deb
-        "
-        pass "FastFlowLM installed."
-    fi
-
-    info "Validating NPU stack..."
-    inbox 'flm validate'
-
-    # 4. npu-lemond user service — runs the in-box lemond (XRT + FLM aware) on :13305.
-    # Distrobox shares the host network namespace, so 127.0.0.1:13305 is identical inside and out.
-    # The host RPM lemond has no XRT/FLM, so it's disabled to avoid grabbing the port first.
-    echo -e "\n\033[34m=== 4/4 npu-lemond user service ===\033[0m"
-    if ! inbox 'command -v lemond' &>/dev/null; then
-        fail "lemond not found in the distrobox — step 3a did not complete. Aborting before service setup."
-        exit 1
-    fi
-    systemctl --user disable --now lemond.service 2>/dev/null || true   # host RPM lemond (NPU-incapable)
-
-    UNIT="$HOME/.config/systemd/user/npu-lemond.service"
-    mkdir -p "$(dirname "$UNIT")"
-    printf '%s\n' \
-        '[Unit]' \
-        'Description=Lemonade Server (NPU) via npu-lemonade distrobox' \
-        '' \
-        '[Service]' \
-        'Type=simple' \
-        'ExecStart=distrobox enter npu-lemonade -- bash -lc "exec lemond"' \
-        'Restart=on-failure' \
-        'RestartSec=5s' \
-        '' \
-        '[Install]' \
-        'WantedBy=default.target' \
-        > "$UNIT"
-    systemctl --user daemon-reload
-    systemctl --user enable --now npu-lemond.service
-    sleep 3
-    if systemctl --user is-active --quiet npu-lemond.service; then
-        pass "npu-lemond.service running on :13305"
-    else
-        fail "Service not active yet — check: journalctl --user -u npu-lemond.service -n 30"
-    fi
-
-    echo ""
-    echo -e "\033[32mNPU stack ready (Lemonade + FastFlowLM on :13305).\033[0m"
-    echo "  Pull NPU models via the lemonade CLI (the server is running now):"
-    echo "    distrobox enter npu-lemonade -- lemonade list   # NPU models are the 'flm'-backend rows (-FLM suffix)"
-    echo "    # Autocomplete — FastFlowLM has NO dedicated coder, so use a small GENERAL NPU model:"
-    echo "    distrobox enter npu-lemonade -- lemonade pull qwen2.5-it-3b-FLM"
-    echo "    # Embeddings on the NPU (silent, ~3W) — FLM's only embedder:"
-    echo "    distrobox enter npu-lemonade -- lemonade pull embed-gemma-300m-FLM"
-    echo "    # Higher-quality embeddings (runs on the iGPU via llama.cpp, NOT the NPU):"
-    echo "    distrobox enter npu-lemonade -- lemonade pull user.nomic-embed --checkpoint 'nomic-ai/nomic-embed-text-v1-GGUF:Q4_K_S' --recipe llamacpp --label embeddings"
-    echo ""
-    echo "  iGPU models (ramalama aliases from ~/.zshrc):"
-    echo "    serve-code   serve-think   serve-edit   serve-autocomplete   serve-embedder"
-    echo ""
-    echo "  NOTE: if this was the first memlock configuration, reboot before NPU inference works."
-
-# Provision the iGPU LLM stack: the kyuz0 Strix Halo Vulkan/RADV llama.cpp toolbox image +
-# iGPU models for ramalama (turquoise-halo only). This is the big-reasoning iGPU path that
-# complements the NPU stack from 'halo-llm'. ramalama itself comes from ~/.Brewfile (sjust brew);
-# serve-code/serve-think/serve-edit/serve-autocomplete/serve-embedder aliases come from ~/.zshrc.
-# Pulls three models: ~37 GB Qwen3.6-35B-A3B MoE brain (serve-code :8080), ~1 GB
-# Qwen2.5-Coder-1.5B FIM coder (serve-autocomplete :8081, Zed edit prediction —
-# the NPU has no coder model so FIM completion must run here), ~4.6 GB Qwen3-Embedding-8B.
-# Run after 'sjust brew'. Idempotent — image and both models are pulled only if absent, so
-# re-running on a provisioned box is a no-op.
-# See: ~/Dropbox/.../Local LLMs/Strix Halo LLM Guide.md §2.A / §2.B / §2.J
-halo-llm-gpu:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(cat /usr/share/turquoise/image-id 2>/dev/null)" != "turquoise-halo" ]]; then
-        echo -e "\033[31mThis recipe is for the turquoise-halo image only.\033[0m"; exit 1
-    fi
-    pass() { echo -e "  \033[32m✓\033[0m $*"; }
-    info() { echo -e "  \033[34m→\033[0m $*"; }
-    fail() { echo -e "  \033[31m✗\033[0m $*"; }
-
-    RAMA_IMG=ghcr.io/nathanw1014/strix-halo-llamacpp:vulkan
-    BRAIN_MODEL=hf://unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q8_K_XL
-    CODER_MODEL=hf://Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF:Q4_K_M
-    EMBED_MODEL=hf://Qwen/Qwen3-Embedding-8B-GGUF:Q4_K_M
-
-    # 1. ramalama — installed via ~/.Brewfile (sjust brew). Serving happens through the
-    # serve-code/serve-think/serve-edit aliases in ~/.zshrc (with MTP speculative-decoding opts).
-    echo -e "\n\033[34m=== 1/6 ramalama present ===\033[0m"
-    if command -v ramalama &>/dev/null; then
-        pass "ramalama $(ramalama version 2>/dev/null | awk '{print $NF}') present."
-    else
-        fail "ramalama not found — run 'sjust brew' first (it's declared in ~/.Brewfile)."
-        exit 1
-    fi
-
-    # 2. Nathanw1014 Strix Halo toolbox (Vulkan/RADV llama.cpp) — the container ramalama serves into.
-    # RADV is the stable/fast path on RDNA 3.5; avoids ROCm instability on this APU.
-    echo -e "\n\033[34m=== 2/6 Vulkan/RADV toolbox image ===\033[0m"
-    if podman image exists "$RAMA_IMG"; then
-        pass "Image already present: $RAMA_IMG"
-    else
-        info "Pulling $RAMA_IMG (several GB)..."
-        podman pull "$RAMA_IMG"
-        pass "Pulled."
-    fi
-
-    # 3. Brain model — Qwen3.6-35B-A3B MoE, Q8 + MTP draft weights (~37 GB GGUF).
-    echo -e "\n\033[34m=== 3/6 Qwen3.6-35B-A3B brain model (~37 GB) ===\033[0m"
-    if ramalama list 2>/dev/null | grep -q 'Qwen3.6-35B-A3B-MTP'; then
-        pass "Model already pulled."
-    else
-        info "Pulling $BRAIN_MODEL (~37 GB — this takes a while)..."
-        ramalama pull "$BRAIN_MODEL"
-        pass "Pulled."
-    fi
-
-    # 4. Autocomplete coder — small Qwen2.5-Coder GGUF (~1 GB) for Zed edit prediction via the
-    # serve-autocomplete alias on :8081, alongside the main model. FIM-capable (real code, not prose);
-    # NPU has no coder model so this must live on the iGPU. Zed "edit_predictions" role → :8081.
-    echo -e "\n\033[34m=== 4/6 Qwen2.5-Coder-1.5B autocomplete model (~1 GB) ===\033[0m"
-    if ramalama list 2>/dev/null | grep -q 'Qwen2.5-Coder-1.5B'; then
-        pass "Model already pulled."
-    else
-        info "Pulling $CODER_MODEL (~1 GB)..."
-        ramalama pull "$CODER_MODEL"
-        pass "Pulled."
-    fi
-
-    # 5. Embedder model — Qwen3-Embedding-8B GGUF (~4.6 GB) for vector embeddings via the
-    # serve-embedder alias on :8082, replacing the old NPU-based FastFlowLM embedder.
-    echo -e "\n\033[34m=== 5/6 Qwen3-Embedding-8B embedder model (~4.6 GB) ===\033[0m"
-    if ramalama list 2>/dev/null | grep -q 'Qwen3-Embedding-8B'; then
-        pass "Model already pulled."
-    else
-        info "Pulling $EMBED_MODEL (~4.6 GB)..."
-        ramalama pull "$EMBED_MODEL"
-        pass "Pulled."
-    fi
-
-    # 6. OpenCode SearXNG venv — tiny Python venv (~15 MB) that backs the stdio MCP extension
-    # registered in ~/.config/opencode/opencode.json. The MCP script and config are in dotfiles
-    # (chezmoi); only the venv must be created on first provision since it can't go in dotfiles.
-    echo -e "\n\033[34m=== 6/6 OpenCode SearXNG venv ===\033[0m"
-    VENV="$HOME/.config/opencode/searxng-venv"
-    if [[ -x "$VENV/bin/python3" ]]; then
-        pass "Venv already present at $VENV"
-    else
-        info "Creating venv at $VENV..."
-        mkdir -p "$(dirname "$VENV")"
-        python3 -m venv "$VENV"
-        "$VENV/bin/pip" install --quiet "mcp[cli]" requests
-        pass "Created and installed mcp + requests."
-    fi
-
-    echo ""
-    echo -e "\033[32miGPU LLM ready.\033[0m Serve it (open a NEW shell so the aliases are available):"
-    echo "    serve-code                               # main model on :8080 (chat/edit, MTP)"
-    echo "    serve-think                              # dense 27B on :8080 (high-stakes reasoning)"
-    echo "    serve-autocomplete                       # FIM coder on :8081 (Zed edit prediction)"
-    echo "    serve-embedder                           # embedder on :8082"
-    echo "    model-check                              # verify which model is loaded on each port"
-    echo "    curl -sf http://localhost:8080/v1/models # verify the main model endpoint is up"
-    echo "    amdgpu_top                               # watch GTT (NOT the 512 MB VRAM line) for real GPU-RAM use"
-    echo ""
-    echo "  Sandboxed coding agent (opencode-safe-* aliases in ~/.zshrc):"
-    echo "    opencode-rebuild                         # (re)build the container image"
-    echo "    opencode-safe-1 [dir]                    # writable dir + read-only home"
-    echo "    opencode-safe-2 [dir]                    # writable dir only (no home access)"
-
-# Set up SearXNG as a local web search backend for Open WebUI.
-# SearXNG is a self-hosted meta search engine that provides Open WebUI's agentic
-# web search with no API key and no rate limits.
-# See: ~/Dropbox/.../Local LLMs/Strix Halo LLM Guide.md § 8.D.3
-# Idempotent — re-running ensures the config, image, and service are in place.
-halo-llm-searxng:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(cat /usr/share/turquoise/image-id 2>/dev/null)" != "turquoise-halo" ]]; then
-        echo -e "\033[31mThis recipe is for the turquoise-halo image only.\033[0m"; exit 1
-    fi
-    pass() { echo -e "  \033[32m✓\033[0m $*"; }
-    info() { echo -e "  \033[34m→\033[0m $*"; }
-    fail() { echo -e "  \033[31m✗\033[0m $*"; }
-
-    SEARXNG_IMG=docker.io/searxng/searxng:latest
-    QUADLET="$HOME/.config/containers/systemd/searxng.container"
-    CONFIG_DIR="$HOME/.config/searxng"
-    SETTINGS="$CONFIG_DIR/settings.yml"
-
-    # 1. Config
-    echo -e "\n\033[34m=== 1/3 SearXNG config ===\033[0m"
-    mkdir -p "$CONFIG_DIR"
-    if [[ -f "$SETTINGS" ]]; then
-        pass "settings.yml already present — skipping."
-    else
-        info "Writing settings.yml..."
-        SECRET=$(openssl rand -hex 32)
-        printf '%s\n' \
-            'use_default_settings: true' \
-            '' \
-            'server:' \
-            "  secret_key: \"$SECRET\"" \
-            '  limiter: false' \
-            '  image_proxy: false' \
-            '' \
-            'search:' \
-            '  formats:' \
-            '    - html' \
-            '    - json' \
-            > "$SETTINGS"
-        pass "Wrote $SETTINGS"
-    fi
-
-    # 2. Quadlet unit
-    echo -e "\n\033[34m=== 2/3 Quadlet unit ===\033[0m"
-    printf '%s\n' \
-        '[Unit]' \
-        'Description=SearXNG (local web search backend for Open WebUI)' \
-        'After=network-online.target' \
-        'Wants=network-online.target' \
-        '' \
-        '[Container]' \
-        'ContainerName=searxng' \
-        "Image=$SEARXNG_IMG" \
-        'PublishPort=8888:8080' \
-        "Volume=$CONFIG_DIR:/etc/searxng:Z" \
-        'AutoUpdate=registry' \
-        '' \
-        '[Service]' \
-        'Restart=always' \
-        '' \
-        '[Install]' \
-        'WantedBy=default.target' \
-        > "$QUADLET"
-    pass "Wrote $QUADLET"
-
-    # 3. Image + service
-    echo -e "\n\033[34m=== 3/3 SearXNG image + service ===\033[0m"
-    if podman image exists "$SEARXNG_IMG"; then
-        pass "Image already present."
-    else
-        info "Pulling $SEARXNG_IMG..."
-        podman pull "$SEARXNG_IMG"
-        pass "Pulled."
-    fi
-    systemctl --user daemon-reload
-    systemctl --user start searxng.service
-    for i in $(seq 1 15); do curl -sf "http://localhost:8888/search?q=test&format=json" >/dev/null 2>&1 && break; sleep 2; done
-    if curl -sf "http://localhost:8888/search?q=test&format=json" >/dev/null 2>&1; then
-        pass "Running and responding on :8888"
-    else
-        fail "Not healthy — check: journalctl --user -u searxng.service -n 40"
-    fi
-
-    echo ""
-    echo -e "\033[32mSearXNG ready.\033[0m"
-    echo "  Search API: http://localhost:8888/search?q=test&format=json"
-    echo ""
-    echo "  Configure Open WebUI (Admin Panel → Settings → Web Search):"
-    echo "    Engine:                  SearXNG"
-    echo "    Query URL:               http://localhost:8888/search?q=<query>&format=json"
-    echo "    Bypass Web Loader:       on"
-    echo "    Bypass Embedding+RAG:    on"
-
-# Build the sandboxed OpenCode container image (localhost/opencode-safe:latest).
-# The Dockerfile and opencode.json live in ~/.config/opencode (chezmoi-managed dotfiles).
-# Re-run after updating ~/.config/opencode/Dockerfile or any config it bakes in.
-# After building, use the opencode-safe-1/2/3 aliases in ~/.zshrc (see § 2.E of the LLM Guide).
-halo-llm-opencode:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(cat /usr/share/turquoise/image-id 2>/dev/null)" != "turquoise-halo" ]]; then
-        echo -e "\033[31mThis recipe is for the turquoise-halo image only.\033[0m"; exit 1
-    fi
-    pass() { echo -e "  \033[32m✓\033[0m $*"; }
-    info() { echo -e "  \033[34m→\033[0m $*"; }
-
-    DOCKERFILE="$HOME/.config/opencode/Dockerfile"
-    if [[ ! -f "$DOCKERFILE" ]]; then
-        echo -e "\033[31mDockerfile not found at $DOCKERFILE. Restore dotfiles first (chezmoi apply).\033[0m"
-        exit 1
-    fi
-
-    echo -e "\n\033[34m=== Building localhost/opencode-safe:latest ===\033[0m"
-    info "Building from $HOME/.config/opencode ..."
-    podman build --no-cache -t localhost/opencode-safe:latest "$HOME/.config/opencode"
-    pass "Image built and ready."
-
-    echo ""
-    echo -e "\033[32mOpenCode sandbox ready.\033[0m"
-    echo "  Use the opencode-safe-* aliases in ~/.zshrc (see § 2.E of the LLM Guide):"
-    echo "    opencode-safe-1 [dir]   # writable dir + read-only home"
-    echo "    opencode-safe-2 [dir]   # writable dir only (no home access)"
-    echo "    opencode-safe-3 <file>  # single-file write access"
 

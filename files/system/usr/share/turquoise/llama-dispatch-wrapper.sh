@@ -9,16 +9,26 @@ echo 1000 > /proc/self/oom_score_adj 2>/dev/null || true
 USE_ROCM=0
 USE_LAURENT=0
 USE_CIRU=0
+USE_MYHACSINT=0
 CLEAN_CMD=()
 
 for arg in "$@"; do
-  if [[ "$arg" == *"--force-ciru"* ]]; then
+  if [[ "$arg" == *"--force-myhacsint"* ]]; then
+    USE_MYHACSINT=1
+    USE_CIRU=0
+    USE_ROCM=0
+    USE_LAURENT=0
+  elif [[ "$arg" == *"--force-ciru"* ]]; then
+    USE_MYHACSINT=0
     USE_CIRU=1
   elif [[ "$arg" == *"--force-rocm"* ]]; then
+    USE_MYHACSINT=0
     USE_ROCM=1
   elif [[ "$arg" == *"--force-laurent"* ]]; then
+    USE_MYHACSINT=0
     USE_LAURENT=1
   elif [[ "$arg" == *"--force-vulkan"* ]]; then
+    USE_MYHACSINT=0
     USE_ROCM=0
     USE_LAURENT=0
     USE_CIRU=0
@@ -27,7 +37,13 @@ for arg in "$@"; do
   fi
 done
 
-if [[ $USE_CIRU -eq 1 ]]; then
+if [[ $USE_MYHACSINT -eq 1 ]]; then
+  # myhacsint Qwen4Exp production snapshot (shared Q8_0 MTP path)
+  export VK_ICD_FILENAMES="/opt/lemonade/llama/vulkan-myhacsint/driver/radeon_icd.x86_64.json"
+  export VK_DRIVER_FILES="$VK_ICD_FILENAMES"
+  export LD_LIBRARY_PATH="/opt/lemonade/llama/vulkan-myhacsint/bin:/opt/lemonade/llama/vulkan-myhacsint/driver"
+  exec /opt/lemonade/llama/vulkan-myhacsint/bin/llama-server "${CLEAN_CMD[@]}"
+elif [[ $USE_CIRU -eq 1 ]]; then
   # CIRU ROCm HIP engine (Qwen3.8-Flash-CIRU-STRIX-IU4 / Strix Halo gfx1151)
   export GGML_CUDA_Q41_MOE_FORCE_J=32
   export GGML_QWEN4EXP_PLE_WORKERS=16
