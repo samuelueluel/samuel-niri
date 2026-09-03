@@ -7,23 +7,115 @@ VOLUME="${VOLUME:-lemonade26-llama}"
 JOBS="${JOBS:-64}"
 ONLY="${ONLY:-all}"
 FORCE="${FORCE:-false}"
+TOOLCHAIN_ONLY="${TOOLCHAIN_ONLY:-false}"
 case "$FORCE" in
   true|1|force|force=true|--force) FORCE="true" ;;
   *) FORCE="false" ;;
+esac
+case "$TOOLCHAIN_ONLY" in
+  true|1|yes|toolchain-only) TOOLCHAIN_ONLY="true" ;;
+  *) TOOLCHAIN_ONLY="false" ;;
 esac
 
 # Vulkan portable driver asset
 DRIVER_URL="${DRIVER_URL:-https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.7.3/strix-halo-llamacpp-vulkan-portable.tar.gz}"
 
+# The engine builders are disposable. Keep the rolling-stable Shaderc toolchain in a
+# separate persistent volume so Nathan and Laurent share one compiler without coupling
+# the build to the host's Homebrew installation.
+SHADERC_REPO="${SHADERC_REPO:-https://github.com/google/shaderc.git}"
+TOOLCHAIN_VOLUME="${TOOLCHAIN_VOLUME:-lemonade26-toolchain}"
+SHADERC_TAG=""
+
 podman volume exists "$VOLUME" || podman volume create "$VOLUME" >/dev/null
+podman volume exists "$TOOLCHAIN_VOLUME" || podman volume create "$TOOLCHAIN_VOLUME" >/dev/null
 
 VOLUME_MOUNT=$(podman volume inspect "$VOLUME" --format '{{.Mountpoint}}' 2>/dev/null || true)
+TOOLCHAIN_MOUNT=$(podman volume inspect "$TOOLCHAIN_VOLUME" --format '{{.Mountpoint}}' 2>/dev/null || true)
+
+latest_shaderc_tag() {
+  local refs tag
+  refs=$(git ls-remote --tags --refs "$SHADERC_REPO" 'refs/tags/v*') || {
+    echo "Unable to query Shaderc stable releases from $SHADERC_REPO" >&2
+    return 1
+  }
+  tag=$(printf '%s\n' "$refs" |
+    awk -F/ '$NF ~ /^v[0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $NF }' |
+    sort -V | tail -1)
+  [[ -n "$tag" ]] || {
+    echo "No stable Shaderc release tag found at $SHADERC_REPO" >&2
+    return 1
+  }
+  printf '%s\n' "$tag"
+}
+
+ensure_shaderc() {
+  local current_tag=""
+  if [[ -f "$TOOLCHAIN_MOUNT/shaderc/current/VERSION" ]]; then
+    current_tag=$(cat "$TOOLCHAIN_MOUNT/shaderc/current/VERSION")
+  fi
+
+  if [[ "$current_tag" == "$SHADERC_TAG" && -x "$TOOLCHAIN_MOUNT/shaderc/current/glslc" ]]; then
+    echo "=== Shaderc $SHADERC_TAG (cached) ==="
+    echo "  glslc: $(cat "$TOOLCHAIN_MOUNT/shaderc/current/GLSLC_VERSION" 2>/dev/null || true)"
+    return 0
+  fi
+
+  echo "=== Shaderc $SHADERC_TAG (latest stable; building) ==="
+  podman run --rm --user 0:0 --name lemonade26-build-shaderc \
+    -e "SHADERC_REPO=$SHADERC_REPO" \
+    -e "SHADERC_TAG=$SHADERC_TAG" \
+    -e "JOBS=$JOBS" \
+    -v "$TOOLCHAIN_VOLUME:/toolchain:rw,z" \
+    "$IMAGE" bash -euc '
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates git cmake ninja-build build-essential python3
+
+  rm -rf /tmp/shaderc-src /tmp/shaderc-build
+  git clone --branch "$SHADERC_TAG" --single-branch --depth=1 "$SHADERC_REPO" /tmp/shaderc-src
+  (cd /tmp/shaderc-src && ./utils/git-sync-deps)
+  cmake -S /tmp/shaderc-src -B /tmp/shaderc-build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DSHADERC_SKIP_TESTS=ON \
+    -DSHADERC_SKIP_EXAMPLES=ON \
+    -DSHADERC_SKIP_COPYRIGHT_CHECK=ON
+  cmake --build /tmp/shaderc-build --target glslc_exe -j "$JOBS"
+  test -x /tmp/shaderc-build/glslc/glslc
+
+  mkdir -p /toolchain/shaderc
+  stage="/toolchain/shaderc/$SHADERC_TAG.new"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  install -m 0755 /tmp/shaderc-build/glslc/glslc "$stage/glslc"
+  "$stage/glslc" --version | head -1 > "$stage/GLSLC_VERSION"
+  printf "%s\\n" "$SHADERC_TAG" > "$stage/VERSION"
+  rm -rf "/toolchain/shaderc/$SHADERC_TAG"
+  mv "$stage" "/toolchain/shaderc/$SHADERC_TAG"
+
+  link="/toolchain/shaderc/current.new"
+  rm -f "$link"
+  ln -s "$SHADERC_TAG" "$link"
+  mv -Tf "$link" /toolchain/shaderc/current
+'
+}
+
+if [[ "$TOOLCHAIN_ONLY" == "true" || "$ONLY" == all || "$ONLY" == nathan || "$ONLY" == laurent ]]; then
+  SHADERC_TAG=$(latest_shaderc_tag)
+  ensure_shaderc
+fi
+
+if [[ "$TOOLCHAIN_ONLY" == "true" ]]; then
+  echo "Shaderc toolchain ready: $TOOLCHAIN_MOUNT/shaderc/current/glslc"
+  exit 0
+fi
 
 should_build() {
   local engine="$1"
   local repo="$2"
   local ref="$3"
   local out_sub="$4"
+  local expected_shaderc_tag="${5:-}"
 
   if [[ "$FORCE" == "true" ]]; then
     return 0
@@ -41,8 +133,17 @@ should_build() {
   fi
 
   if [[ -n "$local_commit" && "$local_commit" == "$remote_commit" ]]; then
+    if [[ -n "$expected_shaderc_tag" ]]; then
+      local local_shaderc_tag=""
+      local_shaderc_tag=$(grep '^shaderc_tag=' "$VOLUME_MOUNT/$out_sub/BUILD-INFO" 2>/dev/null | cut -d= -f2 || true)
+      if [[ "$local_shaderc_tag" != "$expected_shaderc_tag" ]]; then
+        echo "=== $engine ==="
+        echo "  Source commit is current, but Shaderc changed: ${local_shaderc_tag:-<unrecorded>} -> $expected_shaderc_tag"
+        return 0
+      fi
+    fi
     echo "=== $engine ==="
-    echo "  Already up to date at latest commit: $local_commit"
+    echo "  Already up to date at latest commit: $local_commit (Shaderc ${expected_shaderc_tag:-not tracked})"
     return 1
   fi
 
@@ -54,22 +155,27 @@ run_builder() {
   shift
   echo "=== $name (building bleeding-edge) ==="
   podman run --rm --name "lemonade26-build-$name" \
+    -e "SHADERC_TAG=${SHADERC_TAG:-}" \
     -v "$VOLUME:/out:rw,z" \
+    -v "$TOOLCHAIN_VOLUME:/toolchain:ro,z" \
     "$IMAGE" bash -euc "$*"
 }
 
 if [[ "$ONLY" == all || "$ONLY" == nathan ]]; then
-if should_build nathan "https://github.com/Nathanw1014/llama.cpp.git" "refs/heads/strix-halo-vulkan" "vulkan"; then
+if should_build nathan "https://github.com/Nathanw1014/llama.cpp.git" "refs/heads/strix-halo-vulkan" "vulkan" "$SHADERC_TAG"; then
 run_builder nathan '
   export DEBIAN_FRONTEND=noninteractive
   export CC=gcc CXX=g++
   apt-get update -qq
-  apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslc glslang-tools spirv-headers spirv-tools libssl-dev
+  apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslang-tools spirv-headers spirv-tools libssl-dev
+  GLSLC=/toolchain/shaderc/current/glslc
+  test -x "$GLSLC"
+  CPU_TARGET=$(gcc -Q --help=target -march=native 2>/dev/null | awk '\''$1 == "-march=" { print $2; exit }'\'')
   echo "OS: $(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
   echo "glibc: $(ldd --version | head -1)"
   echo "gcc: $(gcc --version | head -1)"
   echo "cmake: $(cmake --version | head -1)"
-  echo "glslc: $(glslc --version 2>&1 | head -1)"
+  echo "glslc: $("$GLSLC" --version 2>&1 | head -1)"
   echo "glslangValidator: $(glslangValidator --version 2>&1 | head -1)"
 
   rm -rf /tmp/vulkan-portable /tmp/vulkan-src /out/vulkan26.new
@@ -88,7 +194,9 @@ run_builder nathan '
     -DGGML_VULKAN=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DVulkan_GLSLC_EXECUTABLE="$(command -v glslc)"
+    -DGGML_NATIVE=ON \
+    -DVulkan_INCLUDE_DIR=/usr/include \
+    -DVulkan_GLSLC_EXECUTABLE="$GLSLC"
   cmake --build build --config Release -j'"$JOBS"' --target llama-server llama-cli llama-bench
   test -x build/bin/llama-server
   test -x build/bin/llama-cli
@@ -104,7 +212,10 @@ run_builder nathan '
     printf "glibc=%s\n" "$(ldd --version | head -1)"
     printf "gcc=%s\n" "$(gcc --version | head -1)"
     printf "cmake=%s\n" "$(cmake --version | head -1)"
-    printf "glslc=%s\n" "$(glslc --version 2>&1 | head -1)"
+    printf "shaderc_tag=%s\n" "$SHADERC_TAG"
+    printf "glslc=%s\n" "$("$GLSLC" --version 2>&1 | head -1)"
+    printf "ggml_native=ON\n"
+    printf "cpu_target=%s\n" "${CPU_TARGET:-native}"
   } > /out/vulkan26.new/BUILD-INFO
   rm -rf /out/vulkan
   mv /out/vulkan26.new /out/vulkan
@@ -113,17 +224,20 @@ fi
 fi
 
 if [[ "$ONLY" == all || "$ONLY" == laurent ]]; then
-if should_build laurent "https://github.com/LaurentZuijdwijk/llama.cpp.git" "refs/heads/vulkan/qwen4exp-rocmfpx" "vulkan-laurent"; then
+if should_build laurent "https://github.com/LaurentZuijdwijk/llama.cpp.git" "refs/heads/vulkan/qwen4exp-rocmfpx" "vulkan-laurent" "$SHADERC_TAG"; then
 run_builder laurent '
   export DEBIAN_FRONTEND=noninteractive
   export CC=gcc CXX=g++
   apt-get update -qq
-  apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslc glslang-tools spirv-headers spirv-tools libssl-dev
+  apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslang-tools spirv-headers spirv-tools libssl-dev
+  GLSLC=/toolchain/shaderc/current/glslc
+  test -x "$GLSLC"
+  CPU_TARGET=$(gcc -Q --help=target -march=native 2>/dev/null | awk '\''$1 == "-march=" { print $2; exit }'\'')
   echo "OS: $(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
   echo "glibc: $(ldd --version | head -1)"
   echo "gcc: $(gcc --version | head -1)"
   echo "cmake: $(cmake --version | head -1)"
-  echo "glslc: $(glslc --version 2>&1 | head -1)"
+  echo "glslc: $("$GLSLC" --version 2>&1 | head -1)"
 
   rm -rf /tmp/vulkan-portable /tmp/laurent-src /out/vulkan-laurent26.new
   mkdir -p /tmp/vulkan-portable /out/vulkan-laurent26.new/driver /out/vulkan-laurent26.new/bin
@@ -142,7 +256,9 @@ run_builder laurent '
     -DGGML_VULKAN=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DVulkan_GLSLC_EXECUTABLE="$(command -v glslc)"
+    -DGGML_NATIVE=ON \
+    -DVulkan_INCLUDE_DIR=/usr/include \
+    -DVulkan_GLSLC_EXECUTABLE="$GLSLC"
   cmake --build build --config Release -j'"$JOBS"' --target llama-server llama-cli llama-bench
   test -x build/bin/llama-server
   test -x build/bin/llama-cli
@@ -157,7 +273,10 @@ run_builder laurent '
     printf "glibc=%s\n" "$(ldd --version | head -1)"
     printf "gcc=%s\n" "$(gcc --version | head -1)"
     printf "cmake=%s\n" "$(cmake --version | head -1)"
-    printf "glslc=%s\n" "$(glslc --version 2>&1 | head -1)"
+    printf "shaderc_tag=%s\n" "$SHADERC_TAG"
+    printf "glslc=%s\n" "$("$GLSLC" --version 2>&1 | head -1)"
+    printf "ggml_native=ON\n"
+    printf "cpu_target=%s\n" "${CPU_TARGET:-native}"
   } > /out/vulkan-laurent26.new/BUILD-INFO
   rm -rf /out/vulkan-laurent
   mv /out/vulkan-laurent26.new /out/vulkan-laurent
@@ -171,12 +290,11 @@ run_builder gaetan '
   export DEBIAN_FRONTEND=noninteractive
   export PATH=/opt/rocm/bin:$PATH
   apt-get update -qq
-  apt-get install -y -qq git cmake build-essential libssl-dev libvulkan-dev glslc spirv-headers glslang-tools
+  apt-get install -y -qq git cmake build-essential libssl-dev libvulkan-dev spirv-headers glslang-tools
   echo "OS: $(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
   echo "ROCm: $(hipconfig --version 2>/dev/null || true)"
   echo "gcc: $(gcc --version | head -1)"
   echo "cmake: $(cmake --version | head -1)"
-  echo "glslc: $(glslc --version 2>&1 | head -1)"
 
   rm -rf /tmp/rocm-src /out/rocm26.new
   git clone --depth=1 https://github.com/gaetan-puleo/llama-cpp-strix-halo.git /tmp/rocm-src
