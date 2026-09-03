@@ -478,7 +478,12 @@ pi-safe full="false":
         exit 1
     fi
 
-    if [[ "{{full}}" == "true" ]] || ! podman image exists localhost/pi-safe:latest; then
+    IS_FULL="false"
+    case "{{full}}" in
+        true|1|full|full=true|--full|--full-rebuild|rebuild|rebuild=true) IS_FULL="true" ;;
+    esac
+
+    if [[ "$IS_FULL" == "true" ]] || ! podman image exists localhost/pi-safe:latest; then
         echo -e "\033[36mRunning full clean rebuild of localhost/pi-safe:latest (--no-cache)...\033[0m"
         podman build --no-cache -t localhost/pi-safe:latest -f "$CONTAINERFILE" "$HOME/dotfiles"
         echo -e "\033[32mlocalhost/pi-safe:latest full rebuild complete.\033[0m"
@@ -505,6 +510,11 @@ pi-safe full="false":
 llm-engines force="false":
     #!/usr/bin/env bash
     set -euo pipefail
+    IS_FORCE="false"
+    case "{{force}}" in
+        true|1|force|force=true|--force) IS_FORCE="true" ;;
+    esac
+
     if ! podman inspect lemonade 2>/dev/null | grep -q 'lemonade'; then
         echo -e "\033[33mLemonade container not found, skipping GPU engine update.\033[0m"
         exit 0
@@ -524,11 +534,11 @@ llm-engines force="false":
         sleep 2
     fi
 
-    echo -e "\033[36mChecking bleeding-edge GPU LLM engines from upstream GitHub repos...\033[0m"
+    echo -e "\033[36mChecking bleeding-edge GPU LLM engines from upstream GitHub repos (FORCE=$IS_FORCE)...\033[0m"
     IMAGE="docker.io/rocm/dev-ubuntu-26.04@sha256:372e5efcd5c68bed44c4e3d13a57648634f669a34e7e8b4b756985c4e4fa4cdf" \
     VOLUME=lemonade26-llama \
     JOBS="${LLM_BUILD_JOBS:-64}" \
-    FORCE="{{force}}" \
+    FORCE="$IS_FORCE" \
     ONLY=all \
     "$ENGINE_SCRIPT"
 
@@ -717,10 +727,10 @@ update quick="false" force="false":
 
     if [[ "$IS_QUICK" != "true" ]]; then
         echo -e "\n\033[34m=== Updating pi-safe Container ===\033[0m"
-        just --justfile "{{justfile()}}" pi-safe full="$IS_FORCE"
+        just --justfile "{{justfile()}}" pi-safe "$IS_FORCE"
 
         echo -e "\n\033[34m=== Updating GPU LLM Engines in Lemonade ===\033[0m"
-        just --justfile "{{justfile()}}" llm-engines force="$IS_FORCE"
+        just --justfile "{{justfile()}}" llm-engines "$IS_FORCE"
     else
         echo -e "\n\033[33m=== Skipping container and LLM engine builds (quick mode) ===\033[0m"
     fi

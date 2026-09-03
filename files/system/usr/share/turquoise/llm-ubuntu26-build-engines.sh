@@ -7,6 +7,10 @@ VOLUME="${VOLUME:-lemonade26-llama}"
 JOBS="${JOBS:-64}"
 ONLY="${ONLY:-all}"
 FORCE="${FORCE:-false}"
+case "$FORCE" in
+  true|1|force|force=true|--force) FORCE="true" ;;
+  *) FORCE="false" ;;
+esac
 
 # Vulkan portable driver asset
 DRIVER_URL="${DRIVER_URL:-https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.7.3/strix-halo-llamacpp-vulkan-portable.tar.gz}"
