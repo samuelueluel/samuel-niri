@@ -468,8 +468,8 @@ distroboxes:
     systemctl --user enable --now rustdesk
     echo "arch-box done."
 
-# Build the isolated coding agent sandbox container (localhost/pi-safe:latest)
-pi-safe no_cache="false":
+# Update the isolated coding agent sandbox container (in-container brew/npm upgrade by default; full rebuild with full=true)
+pi-safe full="false":
     #!/usr/bin/env bash
     set -euo pipefail
     CONTAINERFILE="$HOME/dotfiles/dot_pi/Containerfile"
@@ -477,13 +477,29 @@ pi-safe no_cache="false":
         echo -e "\033[31mpi-safe Containerfile not found at $CONTAINERFILE\033[0m"
         exit 1
     fi
-    BUILD_FLAGS=()
-    if [[ "{{no_cache}}" == "true" ]]; then
-        BUILD_FLAGS+=(--no-cache)
+
+    if [[ "{{full}}" == "true" ]] || ! podman image exists localhost/pi-safe:latest; then
+        echo -e "\033[36mRunning full clean rebuild of localhost/pi-safe:latest (--no-cache)...\033[0m"
+        podman build --no-cache -t localhost/pi-safe:latest -f "$CONTAINERFILE" "$HOME/dotfiles"
+        echo -e "\033[32mlocalhost/pi-safe:latest full rebuild complete.\033[0m"
+        exit 0
     fi
-    echo -e "\033[36mBuilding localhost/pi-safe:latest...\033[0m"
-    podman build "${BUILD_FLAGS[@]}" -t localhost/pi-safe:latest -f "$CONTAINERFILE" "$HOME/dotfiles"
-    echo -e "\033[32mlocalhost/pi-safe:latest build complete.\033[0m"
+
+    # Fast update path (default):
+    # 1. Catch any Containerfile or dot_Brewfile-container changes (uses layer cache, fast if unchanged)
+    echo -e "\033[36mChecking Containerfile layer cache for localhost/pi-safe:latest...\033[0m"
+    podman build -t localhost/pi-safe:latest -f "$CONTAINERFILE" "$HOME/dotfiles"
+
+    # 2. In-container upgrade: update Linuxbrew formulae and upgrade pi-coding-agent, uv, etc.
+    echo -e "\033[36mUpgrading in-container Linuxbrew packages (pi-coding-agent, uv, etc.)...\033[0m"
+    UPGRADE_CTR="pi-safe-upgrade-$$"
+    podman run --name "$UPGRADE_CTR" --entrypoint bash localhost/pi-safe:latest -c '
+        brew update && brew upgrade && brew cleanup
+        npm update -g 2>/dev/null || true
+    '
+    podman commit "$UPGRADE_CTR" localhost/pi-safe:latest >/dev/null
+    podman rm "$UPGRADE_CTR" >/dev/null
+    echo -e "\033[32mlocalhost/pi-safe:latest update complete.\033[0m"
 
 # Check and compile bleeding-edge GPU LLM engines (Vulkan RADV, Laurent, myhacsint, Gaetan, CIRU)
 llm-engines force="false":
@@ -692,8 +708,8 @@ update quick="false" force="false":
     fi
 
     if [[ "{{quick}}" != "true" ]]; then
-        echo -e "\n\033[34m=== Rebuilding pi-safe Container ===\033[0m"
-        sjust pi-safe
+        echo -e "\n\033[34m=== Updating pi-safe Container ===\033[0m"
+        sjust pi-safe full={{force}}
 
         echo -e "\n\033[34m=== Updating GPU LLM Engines in Lemonade ===\033[0m"
         sjust llm-engines force={{force}}
