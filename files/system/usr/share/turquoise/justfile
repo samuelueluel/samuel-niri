@@ -515,7 +515,7 @@ llm-engines force="false":
         true|1|force|force=true|--force) IS_FORCE="true" ;;
     esac
 
-    if ! podman inspect lemonade 2>/dev/null | grep -q 'lemonade'; then
+    if ! podman container exists lemonade; then
         echo -e "\033[33mLemonade container not found, skipping GPU engine update.\033[0m"
         exit 0
     fi
