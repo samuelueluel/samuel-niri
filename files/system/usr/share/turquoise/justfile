@@ -506,7 +506,8 @@ pi-safe full="false":
     podman rm "$UPGRADE_CTR" >/dev/null
     echo -e "\033[32mlocalhost/pi-safe:latest update complete.\033[0m"
 
-# Check and compile bleeding-edge GPU LLM engines (Vulkan RADV, Laurent, Gaetan)
+# Check and compile bleeding-edge GPU LLM engines (Nathan, Laurent, Gaetan,
+# plus halo-box Vulkan and ROCm/HIP variants).
 llm-engines force="false":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -544,7 +545,7 @@ llm-engines force="false":
     WRAPPER_SRC="{{HOME}}/turquoise/files/system/usr/share/turquoise/llama-dispatch-wrapper.sh"
     [[ -f "$WRAPPER_SRC" ]] || WRAPPER_SRC="{{SHARE}}/llama-dispatch-wrapper.sh"
     if [[ -f "$WRAPPER_SRC" ]]; then
-        echo -e "\033[36mSynchronizing and validating the three-engine dispatch wrapper...\033[0m"
+        echo -e "\033[36mSynchronizing and validating the five-engine dispatch wrapper...\033[0m"
         podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/llama-server
         podman cp "$WRAPPER_SRC" lemonade:/opt/lemonade/llama/vulkan/bin/llama-server
         podman cp "$WRAPPER_SRC" lemonade:/root/.cache/lemonade/bin/llamacpp/vulkan/llama-server
@@ -557,6 +558,25 @@ llm-engines force="false":
                 test -x "$f"
                 grep -q -- force-rocm "$f"
                 grep -q -- force-laurent "$f"
+                grep -q -- force-halo-vulkan "$f"
+                grep -q -- force-halo-rocm "$f"
+            done
+            test -x /opt/lemonade/llama/halo-vulkan/bin/llama-server-real
+            test -x /opt/lemonade/llama/halo-rocm/llama-server
+            halo_commit=$(sed -n "s/^commit=//p" /opt/lemonade/llama/halo-vulkan/BUILD-INFO | head -1)
+            test -n "$halo_commit"
+            halo_short=${halo_commit:0:7}
+            check_halo_wrapper() {
+                local wrapper="$1" version help
+                version=$("$wrapper" --force-vulkan --force-halo-vulkan --version 2>&1)
+                grep -q "commit $halo_short" <<<"$version"
+                version=$("$wrapper" --force-halo-vulkan --force-vulkan --version 2>&1)
+                grep -q "commit $halo_short" <<<"$version"
+                help=$("$wrapper" --force-vulkan --force-halo-vulkan --help 2>&1)
+                grep -q -- "--ngram-on-disk" <<<"$help"
+            }
+            for wrapper in /opt/lemonade/llama/llama-server /opt/lemonade/llama/vulkan/bin/llama-server /root/.cache/lemonade/bin/llamacpp/vulkan/llama-server; do
+                check_halo_wrapper "$wrapper"
             done
         '
     fi
@@ -571,11 +591,15 @@ llm-engines force="false":
         sleep 2
     done
 
+# Short singular alias for the engine refresh command.
+llm-engine force="false":
+    just --justfile "{{justfile()}}" llm-engines "{{force}}"
+
 # System maintenance: health check, image upgrade, flatpaks, brew, distroboxes, firmware (not in setup)
 # Options:
 #   sjust update              # Full update, checking bleeding-edge LLM engine commits & updating pi container
 #   sjust update quick=true   # Fast update, skipping LLM engine and container rebuilds
-#   sjust update force=true   # Force full recompile of all 3 LLM engines
+#   sjust update force=true   # Force full recompile of all current LLM engines
 update quick="false" force="false":
     #!/usr/bin/env bash
     set -euo pipefail

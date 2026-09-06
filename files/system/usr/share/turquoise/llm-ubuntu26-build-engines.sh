@@ -29,6 +29,13 @@ SHADERC_REPO="${SHADERC_REPO:-https://github.com/google/shaderc.git}"
 TOOLCHAIN_VOLUME="${TOOLCHAIN_VOLUME:-lemonade26-toolchain}"
 SHADERC_TAG=""
 
+# Community Strix Halo fork. Resolve this once per invocation so the Vulkan and
+# HIP builds below use the same immutable commit, even if master moves mid-run.
+HALO_REPO="${HALO_REPO:-https://github.com/halo-box/strix-llama.cpp.git}"
+HALO_REF="${HALO_REF:-refs/heads/master}"
+HALO_BRANCH="${HALO_REF#refs/heads/}"
+HALO_COMMIT=""
+
 podman volume exists "$VOLUME" || podman volume create "$VOLUME" >/dev/null
 podman volume exists "$TOOLCHAIN_VOLUME" || podman volume create "$TOOLCHAIN_VOLUME" >/dev/null
 
@@ -119,7 +126,7 @@ ensure_shaderc() {
 '
 }
 
-if [[ "$TOOLCHAIN_ONLY" == "true" || "$ONLY" == all || "$ONLY" == nathan || "$ONLY" == laurent ]]; then
+if [[ "$TOOLCHAIN_ONLY" == "true" || "$ONLY" == all || "$ONLY" == nathan || "$ONLY" == laurent || "$ONLY" == halo || "$ONLY" == halo-vulkan ]]; then
   SHADERC_TAG=$(latest_shaderc_tag)
   ensure_shaderc
 fi
@@ -179,6 +186,54 @@ should_build() {
   return 0
 }
 
+# Same as should_build, but the caller has already resolved the remote commit.
+# This is important for halo-box: both backend variants must be built from one
+# exact commit, not from two independent reads of a moving branch.
+should_build_exact() {
+  local engine="$1"
+  local remote_commit="$2"
+  local out_sub="$3"
+  local expected_shaderc_tag="${4:-}"
+  local expected_image_id="${5:-}"
+
+  if [[ "$FORCE" == "true" ]]; then
+    return 0
+  fi
+
+  local info_file=""
+  local local_commit=""
+  if [[ -n "$VOLUME_MOUNT" && -f "$VOLUME_MOUNT/$out_sub/BUILD-INFO" ]]; then
+    info_file="$VOLUME_MOUNT/$out_sub/BUILD-INFO"
+    local_commit=$(grep '^commit=' "$info_file" 2>/dev/null | cut -d= -f2 || true)
+  fi
+
+  if [[ -n "$local_commit" && "$local_commit" == "$remote_commit" ]]; then
+    if [[ -n "$expected_shaderc_tag" ]]; then
+      local local_shaderc_tag=""
+      local_shaderc_tag=$(grep '^shaderc_tag=' "$info_file" 2>/dev/null | cut -d= -f2 || true)
+      if [[ "$local_shaderc_tag" != "$expected_shaderc_tag" ]]; then
+        echo "=== $engine ==="
+        echo "  Source commit is current, but Shaderc changed: ${local_shaderc_tag:-<unrecorded>} -> $expected_shaderc_tag"
+        return 0
+      fi
+    fi
+    if [[ -n "$expected_image_id" ]]; then
+      local local_image_id=""
+      local_image_id=$(grep '^base_image_id=' "$info_file" 2>/dev/null | cut -d= -f2 || true)
+      if [[ "$local_image_id" != "$expected_image_id" ]]; then
+        echo "=== $engine ==="
+        echo "  Source/toolchain is current, but builder image changed: ${local_image_id:-<unrecorded>} -> $expected_image_id"
+        return 0
+      fi
+    fi
+    echo "=== $engine ==="
+    echo "  Already up to date at latest commit: $local_commit (Shaderc ${expected_shaderc_tag:-not tracked}; image ${expected_image_id:-not tracked})"
+    return 1
+  fi
+
+  return 0
+}
+
 run_builder() {
   local name="$1"
   shift
@@ -188,10 +243,24 @@ run_builder() {
     -e "BUILD_IMAGE=$IMAGE" \
     -e "BUILD_IMAGE_ID=$IMAGE_ID" \
     -e "BUILD_IMAGE_DIGEST=$IMAGE_DIGEST" \
+    -e "DRIVER_URL=$DRIVER_URL" \
+    -e "HALO_REPO=$HALO_REPO" \
+    -e "HALO_REF=$HALO_REF" \
+    -e "HALO_BRANCH=$HALO_BRANCH" \
+    -e "HALO_COMMIT=${HALO_COMMIT:-}" \
     -v "$VOLUME:/out:rw,z" \
     -v "$TOOLCHAIN_VOLUME:/toolchain:ro,z" \
     "$IMAGE" bash -euc "$*"
 }
+
+if [[ "$ONLY" == all || "$ONLY" == halo || "$ONLY" == halo-vulkan || "$ONLY" == halo-rocm ]]; then
+  HALO_COMMIT=$(git ls-remote "$HALO_REPO" "$HALO_REF" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  [[ "$HALO_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "Unable to resolve $HALO_REF at $HALO_REPO" >&2
+    exit 1
+  }
+  echo "=== halo-box strix-llama.cpp: $HALO_REF @ $HALO_COMMIT ==="
+fi
 
 if [[ "$ONLY" == all || "$ONLY" == nathan ]]; then
 if should_build nathan "https://github.com/Nathanw1014/llama.cpp.git" "refs/heads/strix-halo-vulkan" "vulkan" "$SHADERC_TAG" "$IMAGE_ID"; then
@@ -320,6 +389,203 @@ run_builder laurent '
 fi
 fi
 
+# halo-box Vulkan/RADV backend. Keep it separate from Nathan's Vulkan build so
+# both can be selected at runtime and compared on the same model.
+if [[ "$ONLY" == all || "$ONLY" == halo || "$ONLY" == halo-vulkan ]]; then
+if should_build_exact halo-vulkan "$HALO_COMMIT" "halo-vulkan" "$SHADERC_TAG" "$IMAGE_ID"; then
+run_builder halo-vulkan '
+  export DEBIAN_FRONTEND=noninteractive
+  export CC=gcc CXX=g++
+  apt-get update -qq
+  apt-get install -y -qq git cmake build-essential curl libvulkan-dev glslang-tools spirv-headers spirv-tools libssl-dev
+  GLSLC=/toolchain/shaderc/current/glslc
+  test -x "$GLSLC"
+  CPU_TARGET=$(gcc -Q --help=target -march=native 2>/dev/null | awk '\''$1 == "-march=" { print $2; exit }'\'')
+  echo "OS: $(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
+  echo "glibc: $(ldd --version | head -1)"
+  echo "gcc: $(gcc --version | head -1)"
+  echo "cmake: $(cmake --version | head -1)"
+  echo "glslc: $("$GLSLC" --version 2>&1 | head -1)"
+  echo "glslangValidator: $(glslangValidator --version 2>&1 | head -1)"
+
+  rm -rf /tmp/halo-vulkan-src /tmp/vulkan-portable /out/halo-vulkan26.new
+  mkdir -p /tmp/vulkan-portable /out/halo-vulkan26.new/driver /out/halo-vulkan26.new/bin
+  curl --fail --location --retry 3 --silent --show-error \
+    -o /tmp/vulkan-portable.tar.gz "$DRIVER_URL"
+  tar xzf /tmp/vulkan-portable.tar.gz -C /tmp/vulkan-portable --strip-components=1
+  test -f /tmp/vulkan-portable/driver/radeon_icd.x86_64.json
+  cp -a /tmp/vulkan-portable/driver/. /out/halo-vulkan26.new/driver/
+
+  git clone --branch "$HALO_BRANCH" --single-branch --depth=1 "$HALO_REPO" /tmp/halo-vulkan-src
+  cd /tmp/halo-vulkan-src
+  git fetch --depth=1 origin "$HALO_COMMIT"
+  git checkout --detach "$HALO_COMMIT"
+  HALO_BUILT_COMMIT=$(git rev-parse HEAD)
+  [[ "$HALO_BUILT_COMMIT" == "$HALO_COMMIT" ]]
+
+  cmake -S . -B build \
+    -DGGML_VULKAN=ON \
+    -DGGML_HIP=OFF \
+    -DGGML_CUDA=OFF \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_NATIVE=ON \
+    -DVulkan_INCLUDE_DIR=/usr/include \
+    -DVulkan_GLSLC_EXECUTABLE="$GLSLC"
+  cmake --build build --config Release -j'"$JOBS"' --target llama-server llama-cli llama-bench
+  test -x build/bin/llama-server
+  test -x build/bin/llama-cli
+  test -x build/bin/llama-bench
+  cp -f build/bin/llama-server /out/halo-vulkan26.new/bin/llama-server-real
+  cp -f build/bin/llama-cli build/bin/llama-bench /out/halo-vulkan26.new/bin/
+  {
+    printf "repo=%s\\n" "$HALO_REPO"
+    printf "ref=%s\\n" "$HALO_REF"
+    printf "commit=%s\\n" "$HALO_BUILT_COMMIT"
+    printf "backend=vulkan\\n"
+    printf "base_image=%s\\n" "$BUILD_IMAGE"
+    printf "base_image_id=%s\\n" "$BUILD_IMAGE_ID"
+    printf "base_image_digest=%s\\n" "$BUILD_IMAGE_DIGEST"
+    printf "os=%s\\n" "$(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
+    printf "glibc=%s\\n" "$(ldd --version | head -1)"
+    printf "gcc=%s\\n" "$(gcc --version | head -1)"
+    printf "cmake=%s\\n" "$(cmake --version | head -1)"
+    printf "shaderc_tag=%s\\n" "$SHADERC_TAG"
+    printf "glslc=%s\\n" "$("$GLSLC" --version 2>&1 | head -1)"
+    printf "ggml_vulkan=ON\\n"
+    printf "ggml_hip=OFF\\n"
+    printf "ggml_cuda=OFF\\n"
+    printf "ggml_native=ON\\n"
+    printf "cpu_target=%s\\n" "${CPU_TARGET:-native}"
+  } > /out/halo-vulkan26.new/BUILD-INFO
+  rm -rf /out/halo-vulkan
+  mv /out/halo-vulkan26.new /out/halo-vulkan
+'
+fi
+fi
+
+# halo-box ROCm/HIP backend. The fork's own ROCm container recipe passes
+# AMDGPU_TARGETS=gfx1151; keep that explicit even though its quick-start text
+# also shows the older GPU_TARGETS spelling.
+if [[ "$ONLY" == all || "$ONLY" == halo || "$ONLY" == halo-rocm ]]; then
+if should_build_exact halo-rocm "$HALO_COMMIT" "halo-rocm" "" "$IMAGE_ID"; then
+run_builder halo-rocm '
+  export DEBIAN_FRONTEND=noninteractive
+  export CC=gcc CXX=g++
+  export PATH=/opt/rocm/bin:$PATH
+  export ROCM_PATH="${ROCM_PATH:-$(hipconfig -R)}"
+  export HIP_PATH="${HIP_PATH:-$ROCM_PATH}"
+  export HIPCXX="${HIPCXX:-$(hipconfig -l)/clang}"
+  apt-get update -qq
+  apt-get install -y -qq git cmake build-essential clang libssl-dev
+  command -v hipconfig >/dev/null
+  test -x "$HIPCXX"
+  CPU_TARGET=$(gcc -Q --help=target -march=native 2>/dev/null | awk '\''$1 == "-march=" { print $2; exit }'\'')
+  echo "OS: $(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
+  echo "glibc: $(ldd --version | head -1)"
+  echo "ROCm: $(hipconfig --version 2>/dev/null || true)"
+  echo "HIP_PATH: $HIP_PATH"
+  echo "HIPCXX: $HIPCXX"
+  echo "gcc: $(gcc --version | head -1)"
+  echo "cmake: $(cmake --version | head -1)"
+
+  rm -rf /tmp/halo-rocm-src /out/halo-rocm26.new
+  git clone --branch "$HALO_BRANCH" --single-branch --depth=1 "$HALO_REPO" /tmp/halo-rocm-src
+  cd /tmp/halo-rocm-src
+  git fetch --depth=1 origin "$HALO_COMMIT"
+  git checkout --detach "$HALO_COMMIT"
+  HALO_BUILT_COMMIT=$(git rev-parse HEAD)
+  [[ "$HALO_BUILT_COMMIT" == "$HALO_COMMIT" ]]
+
+  cmake -S . -B build \
+    -DGGML_HIP=ON \
+    -DGGML_VULKAN=OFF \
+    -DGGML_CUDA=OFF \
+    -DAMDGPU_TARGETS=gfx1151 \
+    -DGGML_HIP_GRAPHS=ON \
+    -DGGML_HIP_MMQ_MFMA=ON \
+    -DGGML_HIP_NO_VMM=ON \
+    -DGGML_HIP_RCCL=OFF \
+    -DGGML_NATIVE=ON \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_BUILD_TYPE=Release
+  cmake --build build --config Release -j'"$JOBS"' --target llama-server llama-cli llama-bench
+  for f in llama-server llama-cli llama-bench; do test -x "build/bin/$f"; done
+
+  OUT=/out/halo-rocm26.new
+  rm -rf "$OUT"
+  mkdir -p "$OUT/lib"
+  shopt -s nullglob
+  cp -f build/bin/llama-server build/bin/llama-cli build/bin/llama-bench "$OUT/"
+  build_libs=(build/bin/*.so*)
+  ((${#build_libs[@]})) && cp -Pf "${build_libs[@]}" "$OUT/lib/"
+  rocm_libs=(/opt/rocm/lib/*.so*)
+  ((${#rocm_libs[@]})) && cp -aL "${rocm_libs[@]}" "$OUT/lib/"
+  llvm_libs=(/opt/rocm/llvm/lib/*.so*)
+  ((${#llvm_libs[@]})) && cp -aL "${llvm_libs[@]}" "$OUT/lib/"
+  cp -a /opt/rocm/lib/rocblas "$OUT/lib/"
+  cp -aL /lib64/ld-linux-x86-64.so.2 "$OUT/ld-linux-x86-64.so.2"
+
+  export LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/llvm/lib:"$OUT/lib":$PWD/build/bin
+  declare -A seen=()
+  queue=("$OUT/llama-server" "$OUT/llama-cli" "$OUT/llama-bench" "$OUT/lib"/*.so*)
+  while ((${#queue[@]})); do
+    f="${queue[0]}"; queue=("${queue[@]:1}")
+    test -e "$f" || continue
+    while read -r lib; do
+      lib_real=$(readlink -f "$lib" 2>/dev/null || true)
+      [[ -n "$lib_real" && -f "$lib_real" ]] || continue
+
+      dest="$OUT/lib/$(basename "$lib")"
+      key="$dest"
+      [[ ${seen[$key]+x} ]] && continue
+      seen[$key]=1
+
+      dest_real=$(readlink -f "$dest" 2>/dev/null || true)
+      if [[ "$lib_real" != "$dest_real" ]]; then
+        cp -aL "$lib_real" "$dest"
+      fi
+      queue+=("$dest")
+    done < <(ldd "$f" 2>/dev/null | grep -oE "/[^ (]+" || true)
+  done
+  {
+    printf "repo=%s\\n" "$HALO_REPO"
+    printf "ref=%s\\n" "$HALO_REF"
+    printf "commit=%s\\n" "$HALO_BUILT_COMMIT"
+    printf "backend=rocm\\n"
+    printf "base_image=%s\\n" "$BUILD_IMAGE"
+    printf "base_image_id=%s\\n" "$BUILD_IMAGE_ID"
+    printf "base_image_digest=%s\\n" "$BUILD_IMAGE_DIGEST"
+    printf "os=%s\\n" "$(. /etc/os-release; printf "%s %s" "$PRETTY_NAME" "$VERSION_ID")"
+    printf "glibc=%s\\n" "$(ldd --version | head -1)"
+    printf "rocm=%s\\n" "$(hipconfig --version 2>/dev/null || true)"
+    printf "hip_path=%s\\n" "$HIP_PATH"
+    printf "hipcxx=%s\\n" "$HIPCXX"
+    printf "target_variable=AMDGPU_TARGETS\\n"
+    printf "amdgpu_targets=gfx1151\\n"
+    printf "ggml_hip=ON\\n"
+    printf "ggml_hip_graphs=ON\\n"
+    printf "ggml_hip_mmq_mfma=ON\\n"
+    printf "ggml_hip_no_vmm=ON\\n"
+    printf "ggml_hip_rccl=OFF\\n"
+    printf "ggml_vulkan=OFF\\n"
+    printf "ggml_cuda=OFF\\n"
+    printf "ggml_native=ON\\n"
+    printf "cpu_target=%s\\n" "${CPU_TARGET:-native}"
+    printf "gcc=%s\\n" "$(gcc --version | head -1)"
+  } > "$OUT/BUILD-INFO"
+
+  STAGED_LP="$OUT:$OUT/lib:$OUT/rocm/lib:$OUT/rocm/lib/rocm_sysdeps/lib:$OUT/rocm/lib/llvm/lib"
+  "$OUT/ld-linux-x86-64.so.2" \
+    --library-path "$STAGED_LP" \
+    "$OUT/llama-server" --help >/dev/null
+
+  rm -rf /out/halo-rocm
+  mv "$OUT" /out/halo-rocm
+'
+fi
+fi
+
 if [[ "$ONLY" == all || "$ONLY" == gaetan ]]; then
 if should_build gaetan "https://github.com/gaetan-puleo/llama-cpp-strix-halo.git" "HEAD" "rocm" "" "$IMAGE_ID"; then
 run_builder gaetan '
@@ -407,6 +673,24 @@ run_builder gaetan '
   mv "$OUT" /out/rocm
 '
 fi
+fi
+
+# When both Halo variants are requested, refuse to report success unless they
+# were both produced from the one commit resolved above. The Justfile only
+# synchronizes the dispatch wrapper after this script returns successfully.
+if [[ "$ONLY" == all || "$ONLY" == halo ]]; then
+  for halo_engine in halo-vulkan halo-rocm; do
+    halo_info="$VOLUME_MOUNT/$halo_engine/BUILD-INFO"
+    [[ -f "$halo_info" ]] || {
+      echo "Missing Halo build metadata: $halo_info" >&2
+      exit 1
+    }
+    grep -qx "commit=$HALO_COMMIT" "$halo_info" || {
+      echo "Halo backends do not share resolved commit $HALO_COMMIT: $halo_info" >&2
+      exit 1
+    }
+  done
+  echo "=== halo-box Vulkan and ROCm artifacts agree on $HALO_COMMIT ==="
 fi
 
 chmod -R a+rX "$VOLUME_MOUNT" 2>/dev/null || true
